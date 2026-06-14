@@ -1,0 +1,52 @@
+# Default profile: author in Claude Code, sync to Hermes, Codex, and Cursor.
+# Copy to skill-bridge.yaml and edit paths, or run: skill-bridge init
+
+default_profile: default
+
+profiles:
+  default:
+    source:
+      format: claude-code
+      scope: global
+      path: ~/.claude/skills
+    targets:
+      - format: hermes
+        scope: global
+        path: ~/.hermes/skills
+      - format: codex
+        scope: global
+        path: ~/.agents/skills
+      - format: cursor
+        scope: global
+        path: ~/.cursor/skills
+    watch: true
+    validate: true
+
+  # Reverse sync example: pull Hermes community skills into Claude Code
+  hermes-to-claude:
+    source:
+      format: hermes
+      scope: global
+      path: ~/.hermes/skills
+    targets:
+      - format: claude-code
+        scope: global
+        path: ~/.claude/skills
+    watch: false
+    validate: true
+
+  # Project-scoped skills checked into your repo
+  project:
+    source:
+      format: claude-code
+      scope: project
+      path: .claude/skills
+    targets:
+      - format: codex
+        scope: project
+        path: .agents/skills
+      - format: cursor
+        scope: project
+        path: .cursor/skills
+    watch: true
+    validate: true

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+
+      - name: Run tests
+        run: pytest -q --cov=skill_bridge --cov-report=term-missing
+
+      - name: Smoke test CLI
+        run: |
+          skill-bridge list-formats
+          skill-bridge validate examples/source-claude-code/code-review
+          skill-bridge convert examples/source-claude-code/code-review --to hermes -o /tmp/out
+        shell: bash

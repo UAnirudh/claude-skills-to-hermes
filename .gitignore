@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.dist/
+dist/
+build/
+.venv/
+venv/
+converted-skills/
+demo-output/
+.skill-bridge/
+.pytest_cache/
+.coverage
+htmlcov/
