@@ -2,26 +2,43 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.table import Table
 
+from skill_bridge.adopt import AdoptReport, run_adopt
 from skill_bridge.agent_paths import detect_installed_agents, global_skill_root, resolve_skill_path
-from skill_bridge.config import init_config_interactive, load_config, save_config
-from skill_bridge.converter import convert_batch, convert_skill, default_output_root
-from skill_bridge.formats.base import all_exporters, load_exporters
+from skill_bridge.config import (
+    DEFAULT_CONFIG_NAME,
+    auto_import_config,
+    init_config_interactive,
+    load_config,
+    save_config,
+)
+from skill_bridge.converter import convert_batch, convert_skill
+from skill_bridge.formats.base import all_exporters, get_exporter, load_exporters
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
+from skill_bridge.provenance import is_bridge_generated
 from skill_bridge.sync import reverse_convert, run_sync
 from skill_bridge.validator import validate_skill
-from skill_bridge.watch import watch_from_config
+from skill_bridge.watch import watch_from_config, watch_roots
 
 console = Console()
 OK = "[green]OK[/green]"
 WARN = "[yellow]![/yellow]"
 ARROW = "->"
+
+ACTION_STYLES = {
+    "import": "green",
+    "update": "cyan",
+    "overwrite": "yellow",
+    "skip": "dim",
+    "error": "red",
+}
 
 
 def _print_results(results, *, show_path: bool = True) -> None:
@@ -32,10 +49,43 @@ def _print_results(results, *, show_path: bool = True) -> None:
             console.print(f"  {WARN} {w}")
 
 
+def _print_adopt(report: AdoptReport, *, dry_run: bool = False) -> None:
+    if not report.items:
+        console.print("[yellow]No skills found in any other harness.[/yellow]")
+        console.print(
+            "Author or install skills somewhere, or pick sources explicitly: "
+            "skill-bridge adopt --to <harness> --from <harness>"
+        )
+        return
+
+    for item in report.items:
+        style = ACTION_STYLES.get(item.action, "white")
+        console.print(
+            f"[{style}]{item.action:<9}[/] {item.skill_name} "
+            f"({item.source_format.value}) {ARROW} {report.target_format.value}"
+        )
+        if item.reason:
+            console.print(f"          [dim]{item.reason}[/dim]")
+        for w in item.warnings:
+            console.print(f"  {WARN} {w}")
+
+    counts = Counter(item.action for item in report.items)
+    verb = "Would import" if dry_run else "Imported"
+    console.print(
+        f"\n[bold]{verb}[/bold] {len(report.selected())} skill(s) into "
+        f"[cyan]{report.target_format.value}[/cyan] "
+        f"({report.target_root})\n"
+        f"  import={counts['import']} update={counts['update']} "
+        f"overwrite={counts['overwrite']} skip={counts['skip']} error={counts['error']}"
+    )
+    if dry_run:
+        console.print("[dim]Dry run: nothing written. Re-run without --dry-run.[/dim]")
+
+
 @click.group()
 @click.version_option(package_name="skill-bridge", prog_name="skill-bridge")
 def main() -> None:
-    """Convert and sync agent skills across Claude Code, Hermes, Codex, Cursor, and more."""
+    """Convert and sync agent skills across Claude Code, Hermes, Codex, Cursor, and every other harness."""
 
 
 @main.command("list-formats")
@@ -45,14 +95,18 @@ def list_formats_cmd() -> None:
     table = Table(title="Supported Agent Formats")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
-    table.add_column("Default output path")
+    table.add_column("Project path")
+    table.add_column("Global path")
     table.add_column("Description")
 
     for exporter in sorted(all_exporters(), key=lambda e: e.format_id.value):
+        fmt = exporter.format_id
+        global_path = exporter.global_skill_subdir or exporter.default_output_subdir
         table.add_row(
-            exporter.format_id.value,
+            fmt.value,
             exporter.display_name,
             exporter.default_output_subdir,
+            str(global_skill_root(fmt)),
             exporter.description,
         )
     console.print(table)
@@ -60,22 +114,56 @@ def list_formats_cmd() -> None:
 
 @main.command("detect")
 def detect_cmd() -> None:
-    """Show which agent skill directories exist on this machine."""
+    """Show every supported harness and whether its skill directory exists here."""
     load_exporters()
     installed = detect_installed_agents()
-    if not installed:
-        console.print("[yellow]No agent skill directories found yet.[/yellow]")
-        console.print("Typical locations:")
-        for fmt in [AgentFormat.CLAUDE_CODE, AgentFormat.HERMES, AgentFormat.CODEX, AgentFormat.CURSOR]:
-            console.print(f"  {fmt.value}: {global_skill_root(fmt)}")
-        return
-    table = Table(title="Detected Agent Skill Directories")
-    table.add_column("Format", style="cyan")
-    table.add_column("Path")
-    for fmt, path in sorted(installed.items(), key=lambda x: x[0].value):
-        count = len(find_skills(path)) if path.is_dir() else 0
-        table.add_row(fmt.value, f"{path}  ({count} skills)")
+    counts: dict[str, int] = {}
+
+    table = Table(title="Agent harnesses on this machine")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Global skill directory")
+    table.add_column("Status")
+    table.add_column("Skills", justify="right")
+
+    for exporter in sorted(all_exporters(), key=lambda e: e.format_id.value):
+        fmt = exporter.format_id
+        if fmt is AgentFormat.GENERIC:
+            continue
+        path = global_skill_root(fmt)
+        found = fmt in installed
+        if found:
+            key = str(path)
+            if key not in counts:
+                counts[key] = len(find_skills(path))
+            count = str(counts[key])
+        else:
+            count = "-"
+        table.add_row(
+            fmt.value,
+            exporter.display_name,
+            str(path),
+            "[green]detected[/green]" if found else "[dim]not found[/dim]",
+            count,
+        )
     console.print(table)
+
+    detected = sorted(fmt.value for fmt in installed)
+    if not detected:
+        console.print(
+            "[yellow]No harness skill directories found.[/yellow] "
+            "Create one (or run a harness once), then: skill-bridge install --harness <id>"
+        )
+        return
+    console.print(f"[bold]{len(detected)} harness(es) detected:[/bold] {', '.join(detected)}")
+    for target in detected:
+        others = [d for d in detected if d != target]
+        if others:
+            console.print(
+                f"  Import other harnesses into {target}: "
+                f"[cyan]skill-bridge adopt --to {target}[/cyan]"
+            )
+            break
 
 
 @main.command("init")
@@ -96,7 +184,7 @@ def init_cmd(
     force: bool,
 ) -> None:
     """Create skill-bridge.yaml for one-command sync and watch."""
-    out_path = output or Path.cwd() / "skill-bridge.yaml"
+    out_path = output or Path.cwd() / DEFAULT_CONFIG_NAME
     if out_path.exists() and not force:
         console.print(f"[red]Config exists: {out_path}[/red]  Use --force to overwrite")
         raise SystemExit(1)
@@ -114,7 +202,140 @@ def init_cmd(
     console.print("\nNext steps:")
     console.print("  skill-bridge sync          # one-shot sync")
     console.print("  skill-bridge watch         # live sync on file changes")
-    console.print("  skill-bridge reverse --from hermes --to claude-code")
+    console.print("  skill-bridge adopt --to hermes   # import every other harness")
+
+
+def _resolve_install_target(harness: str | None, config_path: Path | None) -> AgentFormat:
+    if harness:
+        return AgentFormat.from_string(harness)
+
+    detected = detect_installed_agents()
+    if len(detected) == 1:
+        return next(iter(detected))
+
+    for candidate in (config_path, Path.cwd() / DEFAULT_CONFIG_NAME):
+        if candidate and candidate.is_file():
+            try:
+                profile = load_config(candidate).get_profile(None)
+            except (FileNotFoundError, KeyError, ValueError):
+                continue
+            if profile.targets:
+                return profile.targets[0].format
+
+    listing = (
+        "\n".join(
+            f"  {fmt.value:<12} {path}"
+            for fmt, path in sorted(detected.items(), key=lambda kv: kv[0].value)
+        )
+        or "  (none found)"
+    )
+    console.print("[red]Could not tell which harness you are installing into.[/red]")
+    console.print("Harness skill directories found:\n" + listing)
+    console.print("\nRe-run with the harness you use, e.g. skill-bridge install --harness hermes")
+    raise SystemExit(1)
+
+
+@main.command("install")
+@click.option("-H", "--harness", default=None, help="Harness you are installing into (e.g. hermes, cursor)")
+@click.option("--from", "from_formats", multiple=True, help="Only import from these harnesses (repeatable)")
+@click.option("--scope", type=click.Choice(["global", "project", "both"]), default="global")
+@click.option("--to-path", type=click.Path(path_type=Path), default=None, help="Override the target skills directory")
+@click.option("--force", is_flag=True, help="Overwrite existing config and native (hand-written) skills")
+@click.option("--dry-run", is_flag=True, help="Show what would be imported")
+@click.option("--no-sync", is_flag=True, help="Write config only, import nothing yet")
+@click.option("--no-validate", is_flag=True, help="Skip validation warnings")
+@click.option("-c", "--config", "config_path", type=click.Path(path_type=Path), default=None)
+def install_cmd(
+    harness: str | None,
+    from_formats: tuple[str, ...],
+    scope: str,
+    to_path: Path | None,
+    force: bool,
+    dry_run: bool,
+    no_sync: bool,
+    no_validate: bool,
+    config_path: Path | None,
+) -> None:
+    """Install into your harness: convert skills meant for every other harness.
+
+    Detects the other agent harnesses on this machine and makes their skills work
+    in yours. Writes an 'auto-import' profile so `skill-bridge sync` keeps them
+    up to date afterwards.
+    """
+    load_exporters()
+    target = _resolve_install_target(harness, config_path)
+    target_root = resolve_skill_path(target, override=to_path)
+
+    console.print(f"[bold]Harness:[/bold] {target.value}")
+    console.print(f"[bold]Skills go to:[/bold] {target_root}")
+
+    sources = [AgentFormat.from_string(f) for f in from_formats]
+    cfg_out = config_path or Path.cwd() / DEFAULT_CONFIG_NAME
+    if dry_run:
+        console.print(f"[dim]Dry run: would write {cfg_out}[/dim]")
+    elif cfg_out.exists() and not force:
+        console.print(f"[dim]Keeping existing {cfg_out}[/dim]")
+    else:
+        cfg = auto_import_config(target, from_formats=sources or None)
+        saved = save_config(cfg, cfg_out)
+        console.print(f"{OK} Wrote {saved} (profile 'auto-import')")
+
+    if no_sync:
+        console.print("\nNext: skill-bridge sync")
+        return
+
+    report = run_adopt(
+        target,
+        from_formats=sources or None,
+        scope=scope,
+        target_path=to_path,
+        force=force,
+        validate=not no_validate,
+        dry_run=dry_run,
+    )
+    _print_adopt(report, dry_run=dry_run)
+    if not dry_run:
+        console.print("\nKeep it current: [cyan]skill-bridge sync[/cyan] or [cyan]skill-bridge watch[/cyan]")
+
+
+@main.command("adopt")
+@click.option("--to", "target_format", required=True, help="Harness to convert skills into")
+@click.option("--from", "from_formats", multiple=True, help="Only import from these harnesses (repeatable)")
+@click.option("--scope", type=click.Choice(["global", "project", "both"]), default="global")
+@click.option("--to-path", type=click.Path(path_type=Path), default=None, help="Override the target skills directory")
+@click.option("--force", is_flag=True, help="Overwrite native (hand-written) skills in the target")
+@click.option("--dry-run", is_flag=True, help="Show what would be imported")
+@click.option("--no-validate", is_flag=True, help="Skip validation warnings")
+def adopt_cmd(
+    target_format: str,
+    from_formats: tuple[str, ...],
+    scope: str,
+    to_path: Path | None,
+    force: bool,
+    dry_run: bool,
+    no_validate: bool,
+) -> None:
+    """Import skills from every other harness into one harness.
+
+    Examples:
+
+      skill-bridge adopt --to hermes
+
+      skill-bridge adopt --to cursor --from claude-code --from codex
+    """
+    load_exporters()
+    target = AgentFormat.from_string(target_format)
+    report = run_adopt(
+        target,
+        from_formats=[AgentFormat.from_string(f) for f in from_formats] or None,
+        scope=scope,
+        target_path=to_path,
+        force=force,
+        validate=not no_validate,
+        dry_run=dry_run,
+    )
+    console.print(f"[bold]Source harnesses scanned[/bold] {ARROW} {target.value}\n")
+    _print_adopt(report, dry_run=dry_run)
 
 
 @main.command("inspect")
@@ -127,6 +348,7 @@ def inspect_cmd(source: Path) -> None:
     console.print(f"[bold]Detected source:[/bold] {bundle.source_format}")
     console.print(f"[bold]Supporting dirs:[/bold] {', '.join(bundle.supporting_dirs()) or '(none)'}")
     console.print(f"[bold]Body lines:[/bold] {len(bundle.body.splitlines())}")
+    console.print(f"[bold]Converted by skill-bridge:[/bold] {is_bridge_generated(source)}")
     console.print("\n[bold]Frontmatter keys:[/bold]", ", ".join(bundle.frontmatter.keys()))
 
 
@@ -185,7 +407,7 @@ def convert_cmd(
     total = 0
 
     for fmt in formats:
-        exporter = next(e for e in all_exporters() if e.format_id == fmt)
+        exporter = get_exporter(fmt)
         fmt_out = base_out if len(formats) == 1 else base_out / fmt.value
         fmt_out = fmt_out / exporter.default_output_subdir
 
@@ -260,7 +482,7 @@ def reverse_cmd(
 @click.option("-c", "--config", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--skill", "skill_name", default=None, help="Sync only one skill by name")
 def sync_cmd(profile: str | None, config: Path | None, skill_name: str | None) -> None:
-    """Sync skills using skill-bridge.yaml profile (source -> all targets)."""
+    """Sync skills using skill-bridge.yaml profile (sources -> all targets)."""
     try:
         results = run_sync(profile_name=profile, config_path=config, skill_name=skill_name)
     except FileNotFoundError as exc:
@@ -269,7 +491,12 @@ def sync_cmd(profile: str | None, config: Path | None, skill_name: str | None) -
 
     cfg = load_config(config)
     prof = cfg.get_profile(profile)
-    console.print(f"[bold]Profile:[/bold] {prof.name}  [bold]source:[/bold] {prof.source.path}")
+    if prof.auto_sources:
+        source_label = "auto (every other detected harness)"
+    else:
+        locs = prof.sources or ([prof.source] if prof.source else [])
+        source_label = ", ".join(f"{loc.format.value}:{loc.path}" for loc in locs)
+    console.print(f"[bold]Profile:[/bold] {prof.name}  [bold]sources:[/bold] {source_label}")
     _print_results(results)
     console.print(f"\n[bold]Synced {len(results)} conversion(s)[/bold]")
 
@@ -287,7 +514,17 @@ def watch_cmd(profile: str | None, config: Path | None, debounce: float) -> None
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1) from exc
 
-    console.print(f"[bold]Watching[/bold] {prof.source.path}")
+    roots = watch_roots(prof)
+    label = "auto-detected harnesses" if prof.auto_sources else "sources"
+    if roots:
+        console.print(f"[bold]Watching[/bold] {label}:")
+        for root in roots:
+            console.print(f"  {root}")
+    else:
+        console.print(
+            f"[bold]Watching[/bold] {label}: "
+            "[yellow]none found yet, waiting for one to appear[/yellow]"
+        )
     console.print(f"[bold]Targets:[/bold] {', '.join(t.format.value for t in prof.targets)}")
     console.print("Press Ctrl+C to stop.\n")
 
@@ -295,9 +532,18 @@ def watch_cmd(profile: str | None, config: Path | None, debounce: float) -> None
         console.print(f"\n[cyan]Sync triggered[/cyan] ({reason})")
         _print_results(results, show_path=False)
 
+    def on_error(exc):
+        console.print(f"[red]Sync failed:[/red] {exc}")
+
     try:
-        watch_from_config(profile_name=profile, config_path=config, debounce_seconds=debounce, on_sync=on_sync)
-    except ImportError as exc:
+        watch_from_config(
+            profile_name=profile,
+            config_path=config,
+            debounce_seconds=debounce,
+            on_sync=on_sync,
+            on_error=on_error,
+        )
+    except (ImportError, RuntimeError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1) from exc
 
@@ -330,13 +576,16 @@ def batch_cmd(
 
 @main.command("paths")
 @click.argument("format_name")
-@click.option("--scope", type=click.Choice(["global", "project"]), default="global")
+@click.option("--scope", type=click.Choice(["global", "project", "both"]), default="global")
 def paths_cmd(format_name: str, scope: str) -> None:
     """Print the default install path for an agent format."""
     fmt = AgentFormat.from_string(format_name)
     load_exporters()
-    out = resolve_skill_path(fmt, scope=scope) if scope == "global" else default_output_root(fmt)
-    console.print(str(out))
+    if scope == "both":
+        for name in ("global", "project"):
+            console.print(f"{name}: {resolve_skill_path(fmt, scope=name)}")
+        return
+    console.print(str(resolve_skill_path(fmt, scope=scope)))
 
 
 if __name__ == "__main__":

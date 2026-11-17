@@ -20,6 +20,12 @@ class AgentFormat(str, Enum):
     CLINE = "cline"
     ROO = "roo"
     CONTINUE = "continue"
+    OPENCODE = "opencode"
+    GEMINI = "gemini"
+    COPILOT = "copilot"
+    GOOSE = "goose"
+    OPENHANDS = "openhands"
+    AMP = "amp"
     GENERIC = "generic"
 
     @classmethod
@@ -31,12 +37,34 @@ class AgentFormat(str, Enum):
         normalized = value.strip().lower().replace("_", "-")
         aliases = {
             "claude": cls.CLAUDE_CODE,
+            "claude-code-cli": cls.CLAUDE_CODE,
             "ecc": cls.CLAUDE_CODE,
             "openai": cls.CODEX,
             "openai-codex": cls.CODEX,
+            "codex-cli": cls.CODEX,
             "agentskills": cls.OPENAGENTS,
             "agent-skills": cls.OPENAGENTS,
+            "open-agents": cls.OPENAGENTS,
             "standard": cls.OPENAGENTS,
+            "portable": cls.OPENAGENTS,
+            "windsurf-cascade": cls.WINDSURF,
+            "cascade": cls.WINDSURF,
+            "continue-dev": cls.CONTINUE,
+            "continue.dev": cls.CONTINUE,
+            "open-code": cls.OPENCODE,
+            "opencode-cli": cls.OPENCODE,
+            "gemini-cli": cls.GEMINI,
+            "github-copilot": cls.COPILOT,
+            "copilot-cli": cls.COPILOT,
+            "vscode": cls.COPILOT,
+            "vs-code": cls.COPILOT,
+            "goose-cli": cls.GOOSE,
+            "open-hands": cls.OPENHANDS,
+            "amp-cli": cls.AMP,
+            "zed": cls.AMP,
+            "kilo": cls.AMP,
+            "kilo-code": cls.AMP,
+            "warp": cls.AMP,
         }
         if normalized in aliases:
             return aliases[normalized]

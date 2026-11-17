@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "skill-bridge"
-version = "1.1.0"
-description = "Convert agent skills between Claude Code, Hermes, Codex, Cursor, and other coding agents"
+version = "1.2.0"
+description = "Convert agent skills between every coding harness: Claude Code, Hermes, Codex, Cursor, Gemini CLI, Copilot, OpenCode, Windsurf, and more"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Skill Bridge" }]
-keywords = ["agent-skills", "claude-code", "hermes", "codex", "cursor", "ai-agents"]
+keywords = ["agent-skills", "claude-code", "hermes", "codex", "cursor", "gemini-cli", "copilot", "opencode", "ai-agents", "skill-converter"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
@@ -52,3 +52,4 @@ packages = ["skill_bridge"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+filterwarnings = ["error::DeprecationWarning:skill_bridge.*"]

@@ -1,24 +1,37 @@
-# Default profile: author in Claude Code, sync to Hermes, Codex, and Cursor.
 # Copy to skill-bridge.yaml and edit paths, or run: skill-bridge init
+#
+# `sources: auto` means "every other harness installed on this machine".
+# skill-bridge install --harness <id> writes this profile for you.
 
-default_profile: default
+default_profile: auto-import
 
 profiles:
+  # Import skills meant for every other harness into the one you use.
+  auto-import:
+    sources: auto
+    targets:
+      - format: hermes
+        scope: global
+        path: ~/.hermes/skills
+    watch: true
+    validate: true
+
+  # Classic fan-out: author in Claude Code, sync to several harnesses.
   default:
     source:
       format: claude-code
       scope: global
       path: ~/.claude/skills
     targets:
-      - format: hermes
-        scope: global
-        path: ~/.hermes/skills
       - format: codex
         scope: global
         path: ~/.agents/skills
       - format: cursor
         scope: global
         path: ~/.cursor/skills
+      - format: gemini
+        scope: global
+        path: ~/.gemini/skills
     watch: true
     validate: true
 
@@ -35,6 +48,19 @@ profiles:
     watch: false
     validate: true
 
+  # Explicit multi-source: import two harnesses, ignore the rest
+  codex-and-gemini:
+    sources:
+      - format: codex
+        path: ~/.agents/skills
+      - format: gemini
+        path: ~/.gemini/skills
+    targets:
+      - format: opencode
+        path: ~/.config/opencode/skills
+    watch: true
+    validate: true
+
   # Project-scoped skills checked into your repo
   project:
     source:
@@ -48,5 +74,8 @@ profiles:
       - format: cursor
         scope: project
         path: .cursor/skills
+      - format: copilot
+        scope: project
+        path: .github/skills
     watch: true
     validate: true

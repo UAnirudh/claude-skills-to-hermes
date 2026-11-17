@@ -12,6 +12,7 @@ from skill_bridge.agent_paths import expand_path, global_skill_root, resolve_ski
 from skill_bridge.models import AgentFormat
 
 DEFAULT_CONFIG_NAME = "skill-bridge.yaml"
+AUTO_SOURCE_TOKENS = {"auto", "all", "*"}
 
 
 @dataclass
@@ -21,7 +22,9 @@ class SkillLocation:
     scope: str = "global"  # global | project | custom
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], project: Path | None = None) -> SkillLocation:
+    def from_dict(cls, data: dict[str, Any] | str, project: Path | None = None) -> SkillLocation:
+        if isinstance(data, str):
+            data = {"format": data}
         fmt = AgentFormat.from_string(str(data["format"]))
         scope = str(data.get("scope", "custom" if data.get("path") else "global"))
         path_raw = data.get("path")
@@ -32,19 +35,43 @@ class SkillLocation:
 @dataclass
 class SyncProfile:
     name: str
-    source: SkillLocation
+    source: SkillLocation | None = None
     targets: list[SkillLocation] = field(default_factory=list)
+    sources: list[SkillLocation] = field(default_factory=list)
+    auto_sources: bool = False
     watch: bool = True
     validate: bool = True
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any], project: Path | None = None) -> SyncProfile:
-        source = SkillLocation.from_dict(data["source"], project=project)
-        targets = [SkillLocation.from_dict(t, project=project) for t in data.get("targets", [])]
+        raw_sources = data.get("sources")
+        sources: list[SkillLocation] = []
+        auto_sources = False
+        if isinstance(raw_sources, str):
+            if raw_sources.strip().lower() in AUTO_SOURCE_TOKENS:
+                auto_sources = True
+            else:
+                sources = [SkillLocation.from_dict(raw_sources, project=project)]
+        elif isinstance(raw_sources, list):
+            sources = [SkillLocation.from_dict(item, project=project) for item in raw_sources]
+
+        source = (
+            SkillLocation.from_dict(data["source"], project=project)
+            if data.get("source")
+            else None
+        )
+        if source is None and not sources and not auto_sources:
+            raise ValueError(
+                f"Profile '{name}' needs 'source' or 'sources' "
+                "(use 'sources: auto' to import from every other harness)"
+            )
+
         return cls(
             name=name,
             source=source,
-            targets=targets,
+            targets=[SkillLocation.from_dict(t, project=project) for t in data.get("targets", [])],
+            sources=sources,
+            auto_sources=auto_sources,
             watch=bool(data.get("watch", True)),
             validate=bool(data.get("validate", True)),
         )
@@ -81,6 +108,35 @@ def default_config(project: Path | None = None) -> BridgeConfig:
     return BridgeConfig(profiles={"default": profile}, default_profile="default")
 
 
+def auto_import_config(
+    target: AgentFormat,
+    *,
+    from_formats: list[AgentFormat] | None = None,
+) -> BridgeConfig:
+    """Profile that pulls skills from every other harness into ``target``."""
+    targets = [
+        SkillLocation(format=target, path=global_skill_root(target), scope="global"),
+    ]
+    sources: list[SkillLocation] = []
+    for fmt in from_formats or []:
+        if fmt == target:
+            continue
+        sources.append(
+            SkillLocation(format=fmt, path=global_skill_root(fmt), scope="global")
+        )
+
+    profile = SyncProfile(
+        name="auto-import",
+        source=None,
+        targets=targets,
+        sources=sources,
+        auto_sources=not sources,
+        watch=True,
+        validate=True,
+    )
+    return BridgeConfig(profiles={"auto-import": profile}, default_profile="auto-import")
+
+
 def config_to_dict(config: BridgeConfig) -> dict[str, Any]:
     def loc_dict(loc: SkillLocation) -> dict[str, Any]:
         d: dict[str, Any] = {"format": loc.format.value}
@@ -92,12 +148,17 @@ def config_to_dict(config: BridgeConfig) -> dict[str, Any]:
 
     profiles: dict[str, Any] = {}
     for name, profile in config.profiles.items():
-        profiles[name] = {
-            "source": loc_dict(profile.source),
-            "targets": [loc_dict(t) for t in profile.targets],
-            "watch": profile.watch,
-            "validate": profile.validate,
-        }
+        entry: dict[str, Any] = {}
+        if profile.auto_sources:
+            entry["sources"] = "auto"
+        elif profile.sources:
+            entry["sources"] = [loc_dict(s) for s in profile.sources]
+        if profile.source is not None:
+            entry["source"] = loc_dict(profile.source)
+        entry["targets"] = [loc_dict(t) for t in profile.targets]
+        entry["watch"] = profile.watch
+        entry["validate"] = profile.validate
+        profiles[name] = entry
 
     return {
         "default_profile": config.default_profile,

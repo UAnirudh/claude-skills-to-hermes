@@ -1,33 +1,24 @@
-"""Cline skill exporter."""
+"""Cline skill exporter.
+
+Source of truth: docs.cline.bot/customization/skills (and the cline/cline repo).
+Project skills live in ``.cline/skills/`` (recommended), global skills in
+``~/.cline/skills/``. Cline additionally reads ``.clinerules/skills/`` and
+``.claude/skills/`` for compatibility, so Claude-authored skills are picked up
+without an extra copy.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from skill_bridge.formats.base import FormatExporter, register_exporter
-from skill_bridge.formats.openagents import OpenAgentsExporter
-from skill_bridge.models import AgentFormat, ConversionResult, SkillBundle
+from skill_bridge.formats.base import register_exporter
+from skill_bridge.formats.portable import PortableSkillExporter
+from skill_bridge.models import AgentFormat
 
 
-class ClineExporter(FormatExporter):
+class ClineExporter(PortableSkillExporter):
     format_id = AgentFormat.CLINE
     display_name = "Cline"
     default_output_subdir = ".cline/skills"
-    description = "Cline VS Code extension skills (SKILL.md standard)"
-
-    def __init__(self) -> None:
-        self._base = OpenAgentsExporter()
-
-    def export(
-        self,
-        bundle: SkillBundle,
-        output_root: Path,
-        *,
-        skill_name: str | None = None,
-    ) -> ConversionResult:
-        result = self._base.export(bundle, output_root, skill_name=skill_name)
-        result.target_format = self.format_id
-        return result
+    description = "Cline (VS Code extension); also reads .clinerules/skills and .claude/skills"
 
 
 register_exporter(ClineExporter())

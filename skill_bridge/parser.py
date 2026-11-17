@@ -16,6 +16,20 @@ FRONTMATTER_RE = re.compile(
     re.DOTALL,
 )
 
+SKILL_FILENAMES = ("SKILL.md", "skill.md")
+
+#: Directories that never contain authored skills.
+SKIP_DIR_NAMES = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+}
+
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     match = FRONTMATTER_RE.match(text)
@@ -35,6 +49,16 @@ def detect_source_format(path: Path, frontmatter: dict[str, Any]) -> AgentFormat
         return AgentFormat.CURSOR
     if ".claude" in parts:
         return AgentFormat.CLAUDE_CODE
+    if ".opencode" in parts or ".config" in parts and "opencode" in parts:
+        return AgentFormat.OPENCODE
+    if ".gemini" in parts:
+        return AgentFormat.GEMINI
+    if ".copilot" in parts or ".github" in parts:
+        return AgentFormat.COPILOT
+    if ".goose" in parts or "goose" in parts:
+        return AgentFormat.GOOSE
+    if ".openhands" in parts:
+        return AgentFormat.OPENHANDS
     if ".agents" in parts:
         return AgentFormat.CODEX
     if ".hermes" in parts or ".hermes-agent" in parts:
@@ -58,12 +82,17 @@ def detect_source_format(path: Path, frontmatter: dict[str, Any]) -> AgentFormat
     return AgentFormat.GENERIC
 
 
+def is_skill_dir(path: Path) -> bool:
+    return any((path / name).is_file() for name in SKILL_FILENAMES)
+
+
 def load_skill(skill_dir: Path) -> SkillBundle:
     skill_dir = skill_dir.resolve()
-    skill_md = skill_dir / "SKILL.md"
-    if not skill_md.is_file():
-        skill_md = skill_dir / "skill.md"
-    if not skill_md.is_file():
+    skill_md = next(
+        (skill_dir / name for name in SKILL_FILENAMES if (skill_dir / name).is_file()),
+        None,
+    )
+    if skill_md is None:
         raise FileNotFoundError(f"No SKILL.md found in {skill_dir}")
 
     text = skill_md.read_text(encoding="utf-8")
@@ -92,16 +121,17 @@ def load_skill(skill_dir: Path) -> SkillBundle:
 
 def find_skills(root: Path) -> list[Path]:
     """Discover skill directories containing SKILL.md under root."""
-    root = root.resolve()
-    if (root / "SKILL.md").is_file() or (root / "skill.md").is_file():
+    root = Path(root).resolve()
+    if not root.is_dir():
+        return []
+    if is_skill_dir(root):
         return [root]
 
-    results: list[Path] = []
-    for skill_md in root.rglob("SKILL.md"):
-        if any(part.startswith(".") and part not in {".cursor", ".claude", ".agents"} for part in skill_md.parent.parts):
-            # Skip hidden dirs except known agent folders
-            parent_name = skill_md.parent.name
-            if parent_name.startswith(".") and parent_name not in {".cursor", ".claude", ".agents"}:
+    results: set[Path] = set()
+    for filename in SKILL_FILENAMES:
+        for skill_md in root.rglob(filename):
+            relative_parts = skill_md.relative_to(root).parts
+            if any(part in SKIP_DIR_NAMES for part in relative_parts):
                 continue
-        results.append(skill_md.parent)
-    return sorted(set(results))
+            results.add(skill_md.parent)
+    return sorted(results)

@@ -23,6 +23,15 @@ def dump_frontmatter(data: dict[str, Any]) -> str:
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()
 
 
+def prepare_dest(output_root: Path, name: str) -> Path:
+    """Create a clean destination directory for a converted skill."""
+    dest = output_root / name
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    return dest
+
+
 def render_skill_md(frontmatter: dict[str, Any], body: str) -> str:
     body = body.lstrip("\n")
     if not body.endswith("\n"):

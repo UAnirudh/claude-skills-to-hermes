@@ -13,6 +13,9 @@ class FormatExporter(ABC):
     display_name: str
     default_output_subdir: str
     description: str
+    #: User-level install location, for harnesses whose global path is not a
+    #: sibling of the project path (e.g. OpenCode lives under ~/.config).
+    global_skill_subdir: str | None = None
 
     @abstractmethod
     def export(
@@ -26,7 +29,6 @@ class FormatExporter(ABC):
 
 
 _EXPORTERS: dict[AgentFormat, FormatExporter] = {}
-
 
 def register_exporter(exporter: FormatExporter) -> None:
     _EXPORTERS[exporter.format_id] = exporter
@@ -45,14 +47,20 @@ def all_exporters() -> list[FormatExporter]:
 def load_exporters() -> None:
     """Import all exporter modules to populate registry."""
     from skill_bridge.formats import (  # noqa: F401
+        amp,
         claude_code,
         cline,
         codex,
         continue_dev,
+        copilot,
         cursor,
+        gemini,
         generic,
+        goose,
         hermes,
         openagents,
+        opencode,
+        openhands,
         roo,
         windsurf,
     )
@@ -67,5 +75,11 @@ def load_exporters() -> None:
         cline,
         roo,
         continue_dev,
+        opencode,
+        gemini,
+        copilot,
+        goose,
+        openhands,
+        amp,
         generic,
     )

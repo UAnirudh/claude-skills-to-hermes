@@ -14,21 +14,31 @@ from skill_bridge.utils import (
     slugify_name,
 )
 
-STANDARD_KEYS = {
-    "name",
-    "description",
+STANDARD_KEYS = (
     "license",
     "compatibility",
-    "metadata",
     "allowed-tools",
-}
+)
 
 
 def build_standard_frontmatter(bundle: SkillBundle, name: str) -> dict[str, Any]:
     fm: dict[str, Any] = {"name": name, "description": bundle.description[:1024]}
-    for key in ("license", "compatibility", "allowed-tools"):
+    for key in STANDARD_KEYS:
         if key in bundle.frontmatter:
             fm[key] = bundle.frontmatter[key]
+
+    # Carry over any remaining frontmatter verbatim, in a fixed order. Harnesses
+    # ignore keys they do not know about, and dropping them here is what made
+    # conversions between some harnesses lossy (e.g. Claude Code's `origin`).
+    # The deterministic order keeps repeated conversions byte-identical.
+    for key in sorted(bundle.frontmatter):
+        if key in fm or key in {"name", "description", "metadata"}:
+            continue
+        value = bundle.frontmatter[key]
+        if value is None:
+            continue
+        fm[key] = value
+
     meta = bundle.frontmatter.get("metadata")
     if isinstance(meta, dict) and meta:
         fm["metadata"] = dict(meta)
