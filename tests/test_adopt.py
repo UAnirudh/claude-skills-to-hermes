@@ -163,6 +163,7 @@ def test_project_scope_import(tmp_path, monkeypatch, home):
         (AgentFormat.CODEX, ".agents/skills"),
         (AgentFormat.CURSOR, ".cursor/skills"),
         (AgentFormat.WINDSURF, ".codeium/windsurf/skills"),
+        (AgentFormat.DEVIN, ".config/devin/skills"),
         (AgentFormat.CLINE, ".cline/skills"),
         (AgentFormat.OPENCODE, ".config/opencode/skills"),
         (AgentFormat.GEMINI, ".gemini/skills"),
@@ -187,6 +188,7 @@ def test_global_install_paths(fmt, suffix):
         ("goose-cli", AgentFormat.GOOSE),
         ("zed", AgentFormat.AMP),
         ("continue-dev", AgentFormat.CONTINUE),
+        ("devin-desktop", AgentFormat.DEVIN),
     ],
 )
 def test_harness_aliases(alias, expected):

@@ -17,6 +17,7 @@ class AgentFormat(str, Enum):
     CODEX = "codex"
     OPENAGENTS = "openagents"  # agentskills.io standard
     WINDSURF = "windsurf"
+    DEVIN = "devin"
     CLINE = "cline"
     ROO = "roo"
     CONTINUE = "continue"
@@ -49,6 +50,8 @@ class AgentFormat(str, Enum):
             "portable": cls.OPENAGENTS,
             "windsurf-cascade": cls.WINDSURF,
             "cascade": cls.WINDSURF,
+            "devin-desktop": cls.DEVIN,
+            "devin-local": cls.DEVIN,
             "continue-dev": cls.CONTINUE,
             "continue.dev": cls.CONTINUE,
             "open-code": cls.OPENCODE,

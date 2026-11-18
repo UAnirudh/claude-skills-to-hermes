@@ -5,11 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Agent Skills](https://img.shields.io/badge/spec-agentskills.io-green.svg)](https://agentskills.io)
 
-**Convert and sync Agent Skills between every coding harness** — Claude Code, Hermes Agent, OpenAI Codex, Cursor, Windsurf, Cline, Roo Code, Continue.dev, OpenCode, Gemini CLI, GitHub Copilot, Goose, OpenHands, Amp/Zed/Kilo/Warp, and the [agentskills.io](https://agentskills.io) open standard. Author once, run everywhere.
+**Convert and sync Agent Skills between every coding harness** — Claude Code, Hermes Agent, OpenAI Codex, Cursor, Windsurf, Cline, Roo Code, Continue.dev, OpenCode, Gemini CLI, GitHub Copilot, Goose, OpenHands, Amp/Zed/Kilo/Warp, Devin Desktop, and the [agentskills.io](https://agentskills.io) open standard. Author once, run everywhere.
 
 ## Why Skill Bridge?
 
-Every major coding agent now uses the same core format: a folder with `SKILL.md` (YAML frontmatter + Markdown) plus optional `scripts/`, `references/`, and `assets/`. The differences are install paths and a few metadata conventions. Skill Bridge knows all of them and converts in **any direction** — all 15 harness formats to all 15, tested pairwise.
+Every major coding agent now uses the same core format: a folder with `SKILL.md` (YAML frontmatter + Markdown) plus optional `scripts/`, `references/`, and `assets/`. The differences are install paths and a few metadata conventions. Skill Bridge knows all of them and converts in **any direction** — all 16 harness formats to all 16, tested pairwise.
 
 | Feature | Command |
 |---------|---------|
@@ -95,6 +95,7 @@ Safety rules that make automatic import safe to re-run:
 | `gemini` | Gemini CLI | `.gemini/skills` | `~/.gemini/skills` |
 | `copilot` | GitHub Copilot (agent, review, CLI, VS Code) | `.github/skills` | `~/.copilot/skills` |
 | `windsurf` | Windsurf Cascade | `.windsurf/skills` | `~/.codeium/windsurf/skills` |
+| `devin` | Devin Desktop (Devin Local) | `.devin/skills` | `~/.config/devin/skills` |
 | `cline` | Cline | `.cline/skills` | `~/.cline/skills` |
 | `roo` | Roo Code | `.roo/skills` | `~/.roo/skills` |
 | `continue` | Continue.dev | `.continue/skills` | `~/.continue/skills` |
@@ -104,7 +105,7 @@ Safety rules that make automatic import safe to re-run:
 | `openagents` | agentskills.io standard | `skills` | `~/skills` |
 | `generic` | Normalized output, no harness conventions | `skills` | `~/skills` |
 
-Skill Bridge writes each harness's documented first-choice location, checked against [docs.cline.bot/customization/skills](https://docs.cline.bot/customization/skills) and [docs.devin.ai/desktop/cascade/skills](https://docs.devin.ai/desktop/cascade/skills). Cline also reads `.clinerules/skills` and `.claude/skills`. Windsurf (now Devin Desktop) also reads `.agents/skills` and `~/.agents/skills`, and the newer `.devin/skills` / `~/.config/devin/skills` folders; the `.windsurf/skills` and `~/.codeium/windsurf/skills` paths written here are still read by Cascade, so skills written for either layout work. The shared `.agents/skills` folder remains the portable target (`codex`/`amp`).
+Skill Bridge writes each harness's documented first-choice location, re-checked against the current docs: [Cline](https://docs.cline.bot/customization/skills), [Devin Desktop](https://docs.devin.ai/desktop/devin-local/customizations), [Cursor](https://cursor.com/docs/skills), [Copilot](https://docs.github.com/en/copilot/concepts/agents/about-agent-skills), [Gemini CLI](https://geminicli.com/docs/cli/skills), [Codex](https://developers.openai.com/codex/build-skills), [Roo Code](https://docs.roocode.com/features/skills), [OpenCode](https://opencode.ai/docs/skills), [Amp](https://ampcode.com/docs/customize/skills), [Claude Code](https://code.claude.com/docs/en/skills), [OpenHands](https://docs.openhands.dev/overview/skills) and [Goose](https://goose-docs.ai/docs/guides/context-engineering/using-skills). Cline also reads `.clinerules/skills` and `.claude/skills`. Windsurf is now Devin Desktop: the newer `.devin/skills` / `~/.config/devin/skills` pair is the `devin` row, while the legacy `.windsurf/skills` / `~/.codeium/windsurf/skills` pair the `windsurf` row writes is still read by Cascade, so both layouts work. `.agents/skills` is likewise read by Devin, Cursor, Copilot, Roo, Continue, OpenCode, Goose, OpenHands and Amp. Goose and OpenHands now recommend `.agents/skills` but still discover their own `.goose/skills` / `.openhands/skills` folders, which are written here so existing installs keep updating instead of being duplicated. The shared `.agents/skills` folder remains the portable target (`codex`/`amp`).
 
 Run `skill-bridge list-formats` for the same table with descriptions, and `skill-bridge detect` to see which of them exist on your machine.
 
@@ -225,7 +226,7 @@ pip install -e ".[all]"
 pytest
 ```
 
-The suite includes `tests/test_matrix.py`, which converts a skill from **every** harness format to **every** other one (225 pairs) and asserts the name, description, body, references, provenance marker, and spec validity survive.
+The suite includes `tests/test_matrix.py`, which converts a skill from **every** harness format to **every** harness format (16 × 16 = 256 combinations) and asserts the name, description, body, references, provenance marker, and spec validity survive.
 
 ## License
 

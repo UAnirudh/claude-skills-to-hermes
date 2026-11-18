@@ -2,9 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -32,21 +36,66 @@ jobs:
         run: pytest -q --cov=skill_bridge --cov-report=term-missing
 
       - name: Smoke test CLI
+        shell: bash
         run: |
+          out=".ci-out"
+          rm -rf "$out"
           skill-bridge list-formats
           skill-bridge detect
           skill-bridge validate examples/source-claude-code/code-review
-          skill-bridge convert examples/source-claude-code/code-review --to hermes --to gemini --to copilot -o /tmp/out
-        shell: bash
+          skill-bridge convert examples/source-claude-code/code-review \
+            --to hermes --to gemini --to copilot --to devin -o "$out"
+          for expected in \
+            "$out/hermes/.hermes/skills/code-review/SKILL.md" \
+            "$out/gemini/.gemini/skills/code-review/SKILL.md" \
+            "$out/copilot/.github/skills/code-review/SKILL.md" \
+            "$out/devin/.devin/skills/code-review/SKILL.md"
+          do
+            test -f "$expected" || { echo "missing $expected"; exit 1; }
+          done
 
-      - name: Smoke test cross-harness import
-        run: |
-          export HOME="$(mktemp -d)"
-          mkdir -p "$HOME/.claude/skills/demo" "$HOME/.gemini/skills/demo2"
-          printf -- '---\nname: demo\ndescription: Demo skill for the CI import smoke test.\n---\n\n# Demo\n' > "$HOME/.claude/skills/demo/SKILL.md"
-          printf -- '---\nname: demo2\ndescription: Second demo skill for the CI import smoke test.\n---\n\n# Demo 2\n' > "$HOME/.gemini/skills/demo2/SKILL.md"
-          skill-bridge install --harness hermes --dry-run
-          skill-bridge install --harness hermes
-          test -f "$HOME/.hermes/skills/demo/SKILL.md"
-          test -f "$HOME/.hermes/skills/demo2/SKILL.md"
+      # Project-scope import: every path is relative to the working directory,
+      # so this runs the same on Linux, macOS and Windows. (The global-scope
+      # flavour below needs HOME, which Python ignores on Windows.)
+      - name: Smoke test cross-harness import (project scope)
         shell: bash
+        run: |
+          work=".ci-import"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo" "$work/.gemini/skills/demo2"
+          printf -- '---\nname: demo\ndescription: Demo skill for the CI import smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          printf -- '---\nname: demo2\ndescription: Second demo skill for the CI import smoke test.\n---\n\n# Demo 2\n' \
+            > "$work/.gemini/skills/demo2/SKILL.md"
+          cd "$work"
+          skill-bridge install --harness hermes --scope project --dry-run
+          test ! -d ".hermes/skills" || { echo "dry run wrote output"; exit 1; }
+          skill-bridge install --harness hermes --scope project
+          test -f ".hermes/skills/demo/SKILL.md"
+          test -f ".hermes/skills/demo2/SKILL.md"
+          grep -q "name: demo2" ".hermes/skills/demo2/SKILL.md"
+          grep -q "generated-by" ".hermes/skills/demo2/.skill-bridge.json"
+
+      # Global-scope import plus the auto-import profile that `install` writes:
+      # `sync` must refresh from the harnesses detected at install time.
+      - name: Smoke test install profile and sync
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          home="$(mktemp -d)"
+          project="$(mktemp -d)"
+          export HOME="$home"
+          mkdir -p "$home/.claude/skills/demo" "$home/.gemini/skills/demo2"
+          printf -- '---\nname: demo\ndescription: Demo skill for the CI import smoke test.\n---\n\n# Demo\n' \
+            > "$home/.claude/skills/demo/SKILL.md"
+          printf -- '---\nname: demo2\ndescription: Second demo skill for the CI import smoke test.\n---\n\n# Demo 2\n' \
+            > "$home/.gemini/skills/demo2/SKILL.md"
+          cd "$project"
+          skill-bridge install --harness hermes
+          test -f "$home/.hermes/skills/demo/SKILL.md"
+          test -f "$home/.hermes/skills/demo2/SKILL.md"
+          printf -- '\n## Follow-up\n' >> "$home/.gemini/skills/demo2/SKILL.md"
+          skill-bridge sync
+          grep -q "## Follow-up" "$home/.hermes/skills/demo2/SKILL.md"
+          skill-bridge install --harness devin --from claude-code --from gemini
+          test -f "$home/.config/devin/skills/demo/SKILL.md"
