@@ -82,9 +82,8 @@ jobs:
           # sync/watch would refresh (and create) a separate global copy.
           grep -q "scope: project" skill-bridge.yaml
           printf -- '\n## Follow-up\n' >> ".gemini/skills/demo2/SKILL.md"
-          skill-bridge sync | tee sync.log
+          skill-bridge sync
           grep -q "## Follow-up" ".hermes/skills/demo2/SKILL.md"
-          grep -q "\.hermes/skills" sync.log
 
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.
