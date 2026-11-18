@@ -101,10 +101,10 @@ Safety rules that make automatic import safe to re-run:
 | `goose` | Goose | `.goose/skills` | `~/.config/goose/skills` |
 | `openhands` | OpenHands | `.openhands/skills` | `~/.openhands/skills` |
 | `amp` | Amp, Zed, Kilo Code, Warp | `.agents/skills` | `~/.agents/skills` |
+| `openagents` | agentskills.io standard | `skills` | `~/skills` |
+| `generic` | Normalized output, no harness conventions | `skills` | `~/skills` |
 
-Windsurf also discovers `.agents/skills` and `~/.agents/skills` (plus `.claude/skills` when Claude Code config reading is enabled), and Cline also reads `.clinerules/skills` and `.claude/skills`. Skill Bridge writes each harness's documented first-choice location, checked against [docs.cline.bot/customization/skills](https://docs.cline.bot/customization/skills) and [docs.windsurf.com/windsurf/cascade/skills](https://docs.windsurf.com/windsurf/cascade/skills); the shared `.agents/skills` folder remains the portable target (`codex`/`amp`).
-| `openagents` | agentskills.io standard | `skills/` | `~/skills` |
-| `generic` | Normalized output, no harness conventions | `skills/` | `~/skills` |
+Skill Bridge writes each harness's documented first-choice location, checked against [docs.cline.bot/customization/skills](https://docs.cline.bot/customization/skills) and [docs.devin.ai/desktop/cascade/skills](https://docs.devin.ai/desktop/cascade/skills). Cline also reads `.clinerules/skills` and `.claude/skills`. Windsurf (now Devin Desktop) also reads `.agents/skills` and `~/.agents/skills`, and the newer `.devin/skills` / `~/.config/devin/skills` folders; the `.windsurf/skills` and `~/.codeium/windsurf/skills` paths written here are still read by Cascade, so skills written for either layout work. The shared `.agents/skills` folder remains the portable target (`codex`/`amp`).
 
 Run `skill-bridge list-formats` for the same table with descriptions, and `skill-bridge detect` to see which of them exist on your machine.
 

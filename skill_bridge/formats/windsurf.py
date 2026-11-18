@@ -1,10 +1,12 @@
 """Windsurf Cascade skills exporter.
 
-Source of truth: docs.windsurf.com/windsurf/cascade/skills.
-Workspace skills live in ``.windsurf/skills/``, global skills in
-``~/.codeium/windsurf/skills/``. Windsurf also discovers ``.agents/skills`` and
-``~/.agents/skills`` (plus ``.claude/skills`` when Claude Code config reading is
-enabled), so output here is readable by the shared-convention harnesses too.
+Source of truth: docs.devin.ai/desktop/cascade/skills (Windsurf is now Devin
+Desktop; docs.windsurf.com redirects there). Workspace skills live in
+``.windsurf/skills/``, global skills in ``~/.codeium/windsurf/skills/`` — both
+still read, and ``~/.codeium`` is unchanged per the Devin Desktop FAQ. Newer
+builds also read ``.devin/skills``, ``~/.config/devin/skills``, ``.agents/skills``
+and ``~/.agents/skills`` (plus ``.claude/skills`` when Claude Code config reading
+is enabled), so output here is readable by the shared-convention harnesses too.
 """
 
 from __future__ import annotations
