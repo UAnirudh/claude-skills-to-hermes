@@ -13,6 +13,8 @@ class FormatExporter(ABC):
     display_name: str
     default_output_subdir: str
     description: str
+    # Global install root when it differs from the conversion output.
+    global_output_subdir: str | None = None
 
     @abstractmethod
     def export(
@@ -53,6 +55,8 @@ def load_exporters() -> None:
         generic,
         hermes,
         openagents,
+        openclaw,
+        opencode,
         roo,
         windsurf,
     )
@@ -67,5 +71,7 @@ def load_exporters() -> None:
         cline,
         roo,
         continue_dev,
+        opencode,
+        openclaw,
         generic,
     )

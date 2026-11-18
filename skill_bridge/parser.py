@@ -41,6 +41,12 @@ def detect_source_format(path: Path, frontmatter: dict[str, Any]) -> AgentFormat
         return AgentFormat.HERMES
     if ".windsurf" in parts or "windsurf" in parts:
         return AgentFormat.WINDSURF
+    if ".opencode" in parts or "opencode" in parts:
+        # Global OpenCode skills live in ~/.config/opencode/skills, whose
+        # path has no dot-prefixed "opencode" component.
+        return AgentFormat.OPENCODE
+    if ".openclaw" in parts:
+        return AgentFormat.OPENCLAW
     if ".cline" in parts:
         return AgentFormat.CLINE
     if ".roo" in parts:

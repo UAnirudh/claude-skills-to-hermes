@@ -49,8 +49,13 @@ def sync_profile(
     profile: SyncProfile,
     *,
     skill_name: str | None = None,
+    allow_empty: bool = False,
 ) -> list[ConversionResult]:
-    """Convert source skills to all targets in a profile."""
+    """Convert source skills to all targets in a profile.
+
+    With ``allow_empty`` a source that holds no skills yet returns an empty
+    result instead of raising, which is what long-running watchers want.
+    """
     src = profile.source.path
     if not src.is_dir():
         raise FileNotFoundError(f"Source path missing: {src}")
@@ -61,7 +66,7 @@ def sync_profile(
             raise FileNotFoundError(f"Skill '{skill_name}' not found under {src}")
     else:
         skill_dirs = find_skills(src)
-        if not skill_dirs:
+        if not skill_dirs and not allow_empty:
             raise FileNotFoundError(f"No skills under {src}")
 
     results: list[ConversionResult] = []

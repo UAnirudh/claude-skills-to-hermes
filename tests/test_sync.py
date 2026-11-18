@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from skill_bridge.agent_paths import global_skill_root, resolve_skill_path
+from skill_bridge.agent_paths import (
+    global_skill_root,
+    project_skill_root,
+    resolve_skill_path,
+)
 from skill_bridge.config import init_config_interactive, save_config, load_config
 from skill_bridge.models import AgentFormat
 from skill_bridge.sync import reverse_convert, sync_profile
@@ -13,6 +17,30 @@ def test_global_paths():
     p = global_skill_root(AgentFormat.CLAUDE_CODE)
     assert p.name == "skills"
     assert ".claude" in str(p)
+
+
+def test_windsurf_paths(tmp_path):
+    assert global_skill_root(AgentFormat.WINDSURF) == Path.home() / ".codeium" / "windsurf" / "skills"
+    assert project_skill_root(AgentFormat.WINDSURF, tmp_path) == (tmp_path / ".windsurf" / "skills").resolve()
+
+
+def test_cline_paths(tmp_path):
+    assert global_skill_root(AgentFormat.CLINE) == Path.home() / ".cline" / "skills"
+    assert project_skill_root(AgentFormat.CLINE, tmp_path) == (tmp_path / ".cline" / "skills").resolve()
+
+
+def test_opencode_paths(tmp_path):
+    assert global_skill_root(AgentFormat.OPENCODE) == (
+        Path.home() / ".config" / "opencode" / "skills"
+    )
+    assert project_skill_root(AgentFormat.OPENCODE, tmp_path) == (
+        tmp_path / ".opencode" / "skills"
+    ).resolve()
+
+
+def test_openclaw_paths(tmp_path):
+    assert global_skill_root(AgentFormat.OPENCLAW) == Path.home() / ".openclaw" / "skills"
+    assert project_skill_root(AgentFormat.OPENCLAW, tmp_path) == (tmp_path / "skills").resolve()
 
 
 def test_resolve_custom_path(tmp_path):
@@ -54,6 +82,23 @@ def test_sync_profile(tmp_path):
     results = sync_profile(profile)
     assert len(results) == 1
     assert (tgt / "demo-skill" / "SKILL.md").is_file()
+
+
+def test_sync_profile_empty_source(tmp_path):
+    from skill_bridge.config import SkillLocation, SyncProfile
+
+    source = tmp_path / "source"
+    source.mkdir()
+    profile = SyncProfile(
+        name="empty",
+        source=SkillLocation(format=AgentFormat.OPENCODE, path=source, scope="custom"),
+        targets=[SkillLocation(format=AgentFormat.HERMES, path=tmp_path / "target", scope="custom")],
+    )
+
+    with pytest.raises(FileNotFoundError, match="No skills"):
+        sync_profile(profile)
+
+    assert sync_profile(profile, allow_empty=True) == []
 
 
 def test_reverse_convert_custom_paths(tmp_path):

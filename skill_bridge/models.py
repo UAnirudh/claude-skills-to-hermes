@@ -20,6 +20,8 @@ class AgentFormat(str, Enum):
     CLINE = "cline"
     ROO = "roo"
     CONTINUE = "continue"
+    OPENCODE = "opencode"
+    OPENCLAW = "openclaw"
     GENERIC = "generic"
 
     @classmethod

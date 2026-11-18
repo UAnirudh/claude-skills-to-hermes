@@ -22,27 +22,15 @@ def expand_path(raw: str | Path) -> Path:
 def global_skill_root(fmt: AgentFormat) -> Path:
     """User-level skill directory for an agent."""
     load_exporters()
-    subdir = get_exporter(fmt).default_output_subdir
-    home = user_home()
-
-    # Codex global skills live directly under ~/.agents/skills
-    if fmt == AgentFormat.CODEX:
-        return home / ".agents" / "skills"
-
-    # Most agents: ~/.{prefix}/skills where prefix matches first path segment
-    parts = Path(subdir).parts
-    if parts[0].startswith("."):
-        return home / parts[0] / (parts[1] if len(parts) > 1 else "skills")
-
-    return home / subdir
+    exporter = get_exporter(fmt)
+    return user_home() / (exporter.global_output_subdir or exporter.default_output_subdir)
 
 
 def project_skill_root(fmt: AgentFormat, project: Path | None = None) -> Path:
     """Project-scoped skill directory."""
     load_exporters()
-    subdir = get_exporter(fmt).default_output_subdir
     root = project or Path.cwd()
-    return (root / subdir).resolve()
+    return (root / get_exporter(fmt).default_output_subdir).resolve()
 
 
 def resolve_skill_path(

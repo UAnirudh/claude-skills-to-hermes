@@ -25,6 +25,17 @@ def test_load_skill():
     assert "references" in bundle.supporting_dirs() or (EXAMPLE / "references").is_dir()
 
 
+def test_opencode_global_skill_is_detected(tmp_path):
+    skill = tmp_path / ".config" / "opencode" / "skills" / "demo-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: OpenCode global skill.\n---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+
+    assert load_skill(skill).source_format == AgentFormat.OPENCODE
+
+
 def test_validate_skill():
     bundle = load_skill(EXAMPLE)
     report = validate_skill(bundle, strict_dir_name=True)
@@ -39,6 +50,10 @@ def test_validate_skill():
         AgentFormat.CURSOR,
         AgentFormat.CLAUDE_CODE,
         AgentFormat.OPENAGENTS,
+        AgentFormat.WINDSURF,
+        AgentFormat.CLINE,
+        AgentFormat.OPENCODE,
+        AgentFormat.OPENCLAW,
     ],
 )
 def test_convert_to_formats(fmt, tmp_path):

@@ -279,25 +279,62 @@ def sync_cmd(profile: str | None, config: Path | None, skill_name: str | None) -
 @click.option("-c", "--config", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--debounce", default=1.0, type=float, help="Seconds to debounce file changes")
 def watch_cmd(profile: str | None, config: Path | None, debounce: float) -> None:
-    """Watch source skills and re-sync to targets on change (Ctrl+C to stop)."""
+    """Watch source skills and re-sync to targets on change (Ctrl+C to stop).
+
+    Works with any configured profile, including reverse-sync profiles that
+    set watch: false.
+    """
     try:
         cfg = load_config(config)
         prof = cfg.get_profile(profile)
     except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1) from exc
+    except KeyError as exc:
+        console.print(f"[red]{exc.args[0] if exc.args else exc}[/red]")
+        raise SystemExit(1) from exc
 
+    if not prof.watch:
+        console.print(
+            f"[yellow]Profile '{prof.name}' has watch: false; watching anyway "
+            "because watch was requested explicitly.[/yellow]"
+        )
     console.print(f"[bold]Watching[/bold] {prof.source.path}")
     console.print(f"[bold]Targets:[/bold] {', '.join(t.format.value for t in prof.targets)}")
     console.print("Press Ctrl+C to stop.\n")
 
     def on_sync(reason, results):
-        console.print(f"\n[cyan]Sync triggered[/cyan] ({reason})")
+        if not results:
+            console.print(
+                f"\n[cyan]No skills to sync yet[/cyan] in {prof.source.path}"
+            )
+            if reason == "initial":
+                console.print(
+                    "Waiting for SKILL.md files to appear (Ctrl+C to stop).\n"
+                )
+            return
+        if reason == "initial":
+            console.print(f"\n[cyan]Initial sync complete[/cyan] ({len(results)} conversion(s))")
+        else:
+            console.print(f"\n[cyan]Sync triggered[/cyan] ({reason})")
         _print_results(results, show_path=False)
 
+    def on_error(reason, exc):
+        console.print(f"[red]Sync failed[/red] ({reason}): {exc}")
+
     try:
-        watch_from_config(profile_name=profile, config_path=config, debounce_seconds=debounce, on_sync=on_sync)
+        watch_from_config(
+            profile_name=profile,
+            config_path=config,
+            debounce_seconds=debounce,
+            on_sync=on_sync,
+            on_error=on_error,
+            force=True,
+        )
     except ImportError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1) from exc
+    except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1) from exc
 

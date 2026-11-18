@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Agent Skills](https://img.shields.io/badge/spec-agentskills.io-green.svg)](https://agentskills.io)
 
-**Convert and sync Agent Skills** across Claude Code, Hermes Agent, OpenAI Codex, Cursor, Windsurf, Cline, Roo Code, and the [agentskills.io](https://agentskills.io) open standard — author once, deploy everywhere.
+**Convert and sync Agent Skills** across Claude Code, Hermes Agent, OpenAI Codex, Cursor, Windsurf, Cline, Roo Code, OpenCode, OpenClaw, and the [agentskills.io](https://agentskills.io) open standard — author once, deploy everywhere.
 
 ## Why Skill Bridge?
 
@@ -57,10 +57,16 @@ skill-bridge sync
 | `cursor` | Cursor | `~/.cursor/skills` | `.cursor/skills` |
 | `hermes` | Hermes Agent | `~/.hermes/skills` | `.hermes/skills` |
 | `codex` | OpenAI Codex | `~/.agents/skills` | `.agents/skills` |
-| `windsurf` | Windsurf | `~/.windsurf/skills` | `.windsurf/skills` |
+| `windsurf` | Windsurf | `~/.codeium/windsurf/skills` | `.windsurf/skills` |
 | `cline` | Cline | `~/.cline/skills` | `.cline/skills` |
 | `roo` | Roo Code | `~/.roo/skills` | `.roo/skills` |
 | `continue` | Continue.dev | `~/.continue/skills` | `.continue/skills` |
+| `opencode` | OpenCode | `~/.config/opencode/skills` | `.opencode/skills` |
+| `openclaw` | OpenClaw | `~/.openclaw/skills` | `skills` |
+
+Cline also reads `.clinerules/skills/` and `.claude/skills/` in a project; Windsurf also
+reads `.agents/skills/` and `~/.agents/skills/`; OpenCode also reads the `.claude` and
+`.agents` skill folders for both scopes. Skill Bridge writes each agent's primary path.
 
 Run `skill-bridge list-formats` for the full list.
 
@@ -97,9 +103,16 @@ Then:
 
 ```bash
 skill-bridge sync              # sync all skills once
-skill-bridge watch             # re-sync on file changes
+skill-bridge watch             # sync at startup, then re-sync on changes
 skill-bridge sync --skill my-skill   # sync one skill
 ```
+
+`skill-bridge watch --profile NAME` works with every profile. A profile's `watch: false`
+setting — as on the reverse-sync profile in the example config — only marks it as not
+meant for live sync; an explicit watch request overrides it and prints a notice. The
+watcher syncs once at startup, so existing skills are converted without waiting for a
+change, and a source that holds no skills yet reports "No skills to sync yet" instead of
+failing.
 
 ## Reverse conversion
 
