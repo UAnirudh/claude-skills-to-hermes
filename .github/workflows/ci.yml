@@ -35,6 +35,9 @@ jobs:
       - name: Run tests
         run: pytest -q --cov=skill_bridge --cov-report=term-missing
 
+      - name: Check README harness table matches the exporters
+        run: pytest -q tests/test_readme.py
+
       - name: Smoke test CLI
         shell: bash
         run: |
@@ -75,6 +78,13 @@ jobs:
           test -f ".hermes/skills/demo2/SKILL.md"
           grep -q "name: demo2" ".hermes/skills/demo2/SKILL.md"
           grep -q "generated-by" ".hermes/skills/demo2/.skill-bridge.json"
+          # The profile install wrote must target the project directory too, or
+          # sync/watch would refresh (and create) a separate global copy.
+          grep -q "scope: project" skill-bridge.yaml
+          printf -- '\n## Follow-up\n' >> ".gemini/skills/demo2/SKILL.md"
+          skill-bridge sync | tee sync.log
+          grep -q "## Follow-up" ".hermes/skills/demo2/SKILL.md"
+          grep -q "\.hermes/skills" sync.log
 
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.

@@ -143,6 +143,42 @@ def test_auto_import_config_round_trip_and_sync(home, tmp_path):
     assert (target / "beta" / "SKILL.md").is_file()
 
 
+def test_project_scope_auto_import_config_targets_project(tmp_path, monkeypatch, home):
+    """`install --scope project` must write a profile that syncs where it wrote."""
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".cursor" / "skills", "project-skill")
+
+    cfg = auto_import_config(AgentFormat.HERMES, scope="project")
+    profile = cfg.get_profile(None)
+    assert profile.source_scope == "project"
+    assert profile.targets[0].path == project / ".hermes" / "skills"
+
+    path = save_config(cfg, project / "skill-bridge.yaml")
+    loaded = load_config(path).get_profile(None)
+    assert loaded.targets[0].path == project / ".hermes" / "skills"
+    assert loaded.source_scope == "project"
+
+    results = run_sync(config_path=path)
+    assert {r.skill_name for r in results} == {"project-skill"}
+    assert (project / ".hermes" / "skills" / "project-skill" / "SKILL.md").is_file()
+    assert not global_skill_root(AgentFormat.HERMES).exists()
+
+
+def test_project_scope_auto_import_config_uses_project_sources(tmp_path, monkeypatch, home):
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".gemini" / "skills", "only-in-project")
+
+    profile = auto_import_config(
+        AgentFormat.HERMES, from_formats=[AgentFormat.GEMINI], scope="project"
+    ).get_profile(None)
+
+    assert profile.sources[0].path == project / ".gemini" / "skills"
+
+
 def test_project_scope_import(tmp_path, monkeypatch, home):
     project = tmp_path / "repo"
     project.mkdir()

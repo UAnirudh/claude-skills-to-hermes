@@ -39,6 +39,8 @@ class SyncProfile:
     targets: list[SkillLocation] = field(default_factory=list)
     sources: list[SkillLocation] = field(default_factory=list)
     auto_sources: bool = False
+    #: Scope used to resolve ``sources: auto`` (``global`` or ``project``).
+    source_scope: str = "global"
     watch: bool = True
     validate: bool = True
 
@@ -72,6 +74,7 @@ class SyncProfile:
             targets=[SkillLocation.from_dict(t, project=project) for t in data.get("targets", [])],
             sources=sources,
             auto_sources=auto_sources,
+            source_scope=str(data.get("scope", "global")),
             watch=bool(data.get("watch", True)),
             validate=bool(data.get("validate", True)),
         )
@@ -112,17 +115,36 @@ def auto_import_config(
     target: AgentFormat,
     *,
     from_formats: list[AgentFormat] | None = None,
+    scope: str = "global",
+    project: Path | None = None,
+    target_path: Path | None = None,
 ) -> BridgeConfig:
-    """Profile that pulls skills from every other harness into ``target``."""
+    """Profile that pulls skills from every other harness into ``target``.
+
+    ``scope`` keeps the written profile pointed at the directory the import
+    actually wrote to: ``install --scope project`` targets the project root, so
+    ``sync`` and ``watch`` refresh that copy instead of a separate global one.
+    """
+    resolved_scope = "project" if scope == "project" else "global"
     targets = [
-        SkillLocation(format=target, path=global_skill_root(target), scope="global"),
+        SkillLocation(
+            format=target,
+            path=resolve_skill_path(
+                target, scope=resolved_scope, project=project, override=target_path
+            ),
+            scope="custom" if target_path else resolved_scope,
+        ),
     ]
     sources: list[SkillLocation] = []
     for fmt in from_formats or []:
         if fmt == target:
             continue
         sources.append(
-            SkillLocation(format=fmt, path=global_skill_root(fmt), scope="global")
+            SkillLocation(
+                format=fmt,
+                path=resolve_skill_path(fmt, scope=resolved_scope, project=project),
+                scope=resolved_scope,
+            )
         )
 
     profile = SyncProfile(
@@ -131,6 +153,7 @@ def auto_import_config(
         targets=targets,
         sources=sources,
         auto_sources=not sources,
+        source_scope=resolved_scope,
         watch=True,
         validate=True,
     )
@@ -156,6 +179,8 @@ def config_to_dict(config: BridgeConfig) -> dict[str, Any]:
         if profile.source is not None:
             entry["source"] = loc_dict(profile.source)
         entry["targets"] = [loc_dict(t) for t in profile.targets]
+        if profile.source_scope != "global":
+            entry["scope"] = profile.source_scope
         entry["watch"] = profile.watch
         entry["validate"] = profile.validate
         profiles[name] = entry

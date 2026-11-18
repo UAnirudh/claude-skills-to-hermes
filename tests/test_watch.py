@@ -92,6 +92,17 @@ def test_cline_has_its_own_folder_and_is_watched(home):
     assert watch.watch_roots(profile) == [global_skill_root(AgentFormat.CLINE)]
 
 
+def test_project_scope_auto_profile_watches_project_sources(home, tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".cursor" / "skills", "project-skill")
+
+    profile = auto_import_config(AgentFormat.HERMES, scope="project").get_profile(None)
+
+    assert watch.watch_roots(profile) == [project / ".cursor" / "skills"]
+
+
 def test_single_source_profile_still_works(home):
     write_skill(global_skill_root(AgentFormat.CLAUDE_CODE), "x")
 

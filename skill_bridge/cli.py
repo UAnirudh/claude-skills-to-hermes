@@ -264,7 +264,8 @@ def install_cmd(
     """
     load_exporters()
     target = _resolve_install_target(harness, config_path)
-    target_root = resolve_skill_path(target, override=to_path)
+    resolved_scope = "project" if scope == "project" else "global"
+    target_root = resolve_skill_path(target, scope=resolved_scope, override=to_path)
 
     console.print(f"[bold]Harness:[/bold] {target.value}")
     console.print(f"[bold]Skills go to:[/bold] {target_root}")
@@ -276,7 +277,12 @@ def install_cmd(
     elif cfg_out.exists() and not force:
         console.print(f"[dim]Keeping existing {cfg_out}[/dim]")
     else:
-        cfg = auto_import_config(target, from_formats=sources or None)
+        cfg = auto_import_config(
+            target,
+            from_formats=sources or None,
+            scope=scope,
+            target_path=to_path,
+        )
         saved = save_config(cfg, cfg_out)
         console.print(f"{OK} Wrote {saved} (profile 'auto-import')")
 

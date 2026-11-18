@@ -20,9 +20,13 @@ def profile_sources(profile: SyncProfile, *, project: Path | None = None) -> lis
     """Resolve a profile's source harnesses, expanding ``sources: auto``."""
     if profile.auto_sources:
         target_formats = {t.format for t in profile.targets}
+        scope = profile.source_scope
         return [
-            SkillLocation(format=fmt, path=path, scope="global")
-            for fmt, path in sorted(detect_installed_agents().items(), key=lambda kv: kv[0].value)
+            SkillLocation(format=fmt, path=path, scope=scope)
+            for fmt, path in sorted(
+                detect_installed_agents(scope=scope, project=project).items(),
+                key=lambda kv: kv[0].value,
+            )
             if fmt not in target_formats
         ]
     if profile.sources:

@@ -49,14 +49,17 @@ def resolve_skill_path(
     return global_skill_root(fmt)
 
 
-def detect_installed_agents() -> dict[AgentFormat, Path]:
-    """Return agent formats whose global skill directories exist."""
+def detect_installed_agents(
+    scope: str = "global",
+    project: Path | None = None,
+) -> dict[AgentFormat, Path]:
+    """Return agent formats whose skill directories exist, for one scope."""
     found: dict[AgentFormat, Path] = {}
     for fmt in AgentFormat:
         if fmt == AgentFormat.GENERIC:
             continue
         try:
-            path = global_skill_root(fmt)
+            path = resolve_skill_path(fmt, scope=scope, project=project)
             if path.is_dir():
                 found[fmt] = path
         except KeyError:
