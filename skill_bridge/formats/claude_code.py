@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from skill_bridge.formats.base import FormatExporter, register_exporter
 from skill_bridge.formats.openagents import build_standard_frontmatter
 from skill_bridge.models import AgentFormat, ConversionResult, SkillBundle
-from skill_bridge.utils import copy_skill_tree, normalize_reference_dirs, render_skill_md, slugify_name
+from skill_bridge.utils import (
+    copy_skill_tree,
+    normalize_reference_dirs,
+    prepare_dest,
+    render_skill_md,
+    slugify_name,
+)
 
 
 class ClaudeCodeExporter(FormatExporter):
@@ -25,20 +30,13 @@ class ClaudeCodeExporter(FormatExporter):
         skill_name: str | None = None,
     ) -> ConversionResult:
         name = slugify_name(skill_name or bundle.name)
-        dest = output_root / name
-        if dest.exists():
-            import shutil
-
-            shutil.rmtree(dest)
-        dest.mkdir(parents=True)
+        dest = prepare_dest(output_root, name)
         copy_skill_tree(bundle.root, dest)
         warnings = normalize_reference_dirs(bundle, dest)
 
-        fm = build_standard_frontmatter(bundle, name)
-        # Preserve Claude-specific optional fields
-        for key in ("origin", "allowed-tools"):
-            if key in bundle.frontmatter and key not in fm:
-                fm[key] = bundle.frontmatter[key]
+        # Claude Code reads origin/allowed-tools/model/paths/etc. natively, so
+        # the shared table already puts every field it understands at top level.
+        fm = build_standard_frontmatter(bundle, name, target=self.format_id)
 
         meta = fm.get("metadata") or {}
         if not isinstance(meta, dict):

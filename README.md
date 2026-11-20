@@ -196,10 +196,37 @@ skill-bridge paths <format> [--scope global|project|both]
 ## What gets converted
 
 - **SKILL.md** — normalized frontmatter (`name`, `description`, spec-compliant slugs) in a deterministic key order, so repeated conversions are byte-identical
+- **Frontmatter fields** — translated per harness, in both directions (see below), not blindly copied
 - **Body** — preserved verbatim; Hermes adds `## When to Use` if missing (never twice)
-- **Harness-specific fields** — preserved: Claude Code `origin`/`allowed-tools`, Cursor `disable-model-invocation`, Continue `metadata.continue`, Hermes `metadata.hermes`
 - **Supporting files** — `scripts/`, `references/`, `assets/`, `templates/` copied as-is; `reference/` renamed to `references/`
 - **Provenance** — a `.skill-bridge.json` marker in every generated skill, used to refresh safely and never clobber hand-written skills
+
+## Field translation across harnesses
+
+Every harness reads the same six spec fields (`name`, `description`, `license`,
+`compatibility`, `metadata`, `allowed-tools`) and then its own extras. Skill
+Bridge keeps a table of what each harness documents reading and translates the
+rest instead of dropping it or leaking it:
+
+| Source field | Who reads it natively | Where the intent goes elsewhere |
+|--------------|----------------------|---------------------------------|
+| `allowed-tools` | Claude Code (space string), Devin (YAML list) | parked in `metadata.skill-bridge.extra` |
+| `disable-model-invocation` | Claude Code, Cursor, Copilot, OpenCode | Hermes gets `metadata.hermes.category: workflow`; others get `metadata.skill-bridge.manual-invocation` |
+| `user-invocable`, `argument-hint` | Claude Code, Copilot (argument-hint also Devin) | parked in `metadata.skill-bridge.extra`; a model-only skill (`triggers: [model]`, `user-invocable: false`) becomes `user-invocable: false` |
+| `model`, `context`, `agent`, `hooks`, `paths` | Claude Code (`paths` also Cursor) | parked in `metadata.skill-bridge.extra` |
+| `triggers`, `permissions`, `subagent` | Devin | parked in `metadata.skill-bridge.extra`; `triggers: [model]` is model-only and maps to `user-invocable: false`, `triggers: [user]` to `disable-model-invocation: true` |
+| `metadata.hermes`, `metadata.continue`, `metadata.opencode` | the owning harness | kept as-is in `metadata` |
+
+`metadata.skill-bridge.extra` is read back out when a skill reaches a harness
+that *can* express those fields, so `Claude Code → Codex → Gemini → Claude Code`
+returns the original `allowed-tools`, `model` and `argument-hint`. Each output
+therefore carries only keys its harness actually reads — which matters because
+claude.ai uploads reject unknown frontmatter keys rather than ignoring them.
+
+Source detection is just as broad: skills are attributed to a harness by any of
+its install layouts, including the user-level ones (`~/.config/devin/skills`,
+`~/.codeium/windsurf/skills`, `~/.config/opencode/skills`, `~/.clinerules/skills`)
+and by frontmatter hints when a skill has been copied out of its harness folder.
 
 ## Programmatic API
 
@@ -224,6 +251,7 @@ for r in results:
 ```bash
 pip install -e ".[all]"
 pytest
+python scripts/e2e_all_harnesses.py   # seeds every harness, installs into each
 ```
 
 The suite includes `tests/test_matrix.py`, which converts a skill from **every** harness format to **every** harness format (16 × 16 = 256 combinations) and asserts the name, description, body, references, provenance marker, and spec validity survive.

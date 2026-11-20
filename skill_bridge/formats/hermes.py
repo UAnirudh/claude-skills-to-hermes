@@ -22,7 +22,9 @@ from skill_bridge.utils import (
 
 
 def build_hermes_frontmatter(bundle: SkillBundle, name: str) -> dict[str, Any]:
-    fm = build_standard_frontmatter(bundle, name)
+    # The shared table already translated foreign fields: source-only extras
+    # arrive under metadata['skill-bridge'] and are merged below, never lost.
+    fm = build_standard_frontmatter(bundle, name, target=AgentFormat.HERMES)
 
     for key in ("version", "license", "platforms", "compatibility"):
         if key in bundle.frontmatter:
@@ -45,7 +47,10 @@ def build_hermes_frontmatter(bundle: SkillBundle, name: str) -> dict[str, Any]:
     if bundle.frontmatter.get("disable-model-invocation"):
         hermes_meta.setdefault("category", "workflow")
 
-    merged_meta = deep_merge(existing_meta, {"hermes": hermes_meta})
+    carried = fm.get("metadata")
+    carried = dict(carried) if isinstance(carried, dict) else {}
+    merged_meta = deep_merge(carried, existing_meta)
+    merged_meta = deep_merge(merged_meta, {"hermes": hermes_meta})
     merged_meta.setdefault("converted-by", "skill-bridge")
     fm["metadata"] = merged_meta
 

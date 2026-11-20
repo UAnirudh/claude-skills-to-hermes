@@ -7,7 +7,8 @@ OpenCode, Cline, Amp, Goose, Roo, …) all read the same directory shape:
     <skills root>/<skill-name>/references/…
     <skills root>/<skill-name>/scripts/…
 
-They differ only in where that root lives, so subclasses set paths only.
+They differ in where that root lives and in the frontmatter fields they read,
+so subclasses set paths only and the field table lives in ``skill_bridge.compat``.
 """
 
 from __future__ import annotations
@@ -41,7 +42,9 @@ class PortableSkillExporter(FormatExporter):
         copy_skill_tree(bundle.root, dest)
         warnings = normalize_reference_dirs(bundle, dest)
 
-        frontmatter = build_standard_frontmatter(bundle, name)
+        frontmatter = build_standard_frontmatter(
+            bundle, name, target=self.format_id
+        )
         (dest / "SKILL.md").write_text(
             render_skill_md(frontmatter, bundle.body), encoding="utf-8"
         )

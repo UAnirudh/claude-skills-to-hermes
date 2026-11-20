@@ -19,8 +19,27 @@ def slugify_name(raw: str) -> str:
     return slug[:64] or "unnamed-skill"
 
 
+def ordered_mapping(data: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic key order: name, description, then the rest sorted.
+
+    Conversions can reach the same frontmatter through different hops, so the
+    insertion order of ``metadata`` differs. Sorting here is what keeps
+    repeated conversions byte-identical.
+    """
+    ordered: dict[str, Any] = {}
+    for key in ("name", "description"):
+        if key in data:
+            ordered[key] = data[key]
+    for key in sorted(k for k in data if k not in ordered):
+        value = data[key]
+        ordered[key] = ordered_mapping(value) if isinstance(value, dict) else value
+    return ordered
+
+
 def dump_frontmatter(data: dict[str, Any]) -> str:
-    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True).strip()
+    return yaml.safe_dump(
+        ordered_mapping(data), sort_keys=False, allow_unicode=True
+    ).strip()
 
 
 def prepare_dest(output_root: Path, name: str) -> Path:

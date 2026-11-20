@@ -49,7 +49,7 @@ def detect_source_format(path: Path, frontmatter: dict[str, Any]) -> AgentFormat
         return AgentFormat.CURSOR
     if ".claude" in parts:
         return AgentFormat.CLAUDE_CODE
-    if ".opencode" in parts or ".config" in parts and "opencode" in parts:
+    if ".opencode" in parts or (".config" in parts and "opencode" in parts):
         return AgentFormat.OPENCODE
     if ".gemini" in parts:
         return AgentFormat.GEMINI
@@ -65,20 +65,39 @@ def detect_source_format(path: Path, frontmatter: dict[str, Any]) -> AgentFormat
         return AgentFormat.HERMES
     if ".windsurf" in parts or "windsurf" in parts:
         return AgentFormat.WINDSURF
-    if ".cline" in parts:
+    if ".devin" in parts or (".config" in parts and "devin" in parts):
+        return AgentFormat.DEVIN
+    if ".cline" in parts or ".clinerules" in parts:
         return AgentFormat.CLINE
     if ".roo" in parts:
         return AgentFormat.ROO
     if ".continue" in parts:
         return AgentFormat.CONTINUE
 
+    # Frontmatter-only clues, strongest first. These matter when a skill was
+    # copied out of its harness folder: several harnesses now read
+    # `disable-model-invocation`, so it is the weakest signal, not the first.
     metadata = frontmatter.get("metadata") or {}
-    if isinstance(metadata, dict) and "hermes" in metadata:
-        return AgentFormat.HERMES
-    if frontmatter.get("disable-model-invocation") is not None:
-        return AgentFormat.CURSOR
+    if isinstance(metadata, dict):
+        for key, fmt in (
+            ("hermes", AgentFormat.HERMES),
+            ("continue", AgentFormat.CONTINUE),
+            ("opencode", AgentFormat.OPENCODE),
+            ("codex", AgentFormat.CODEX),
+        ):
+            if key in metadata:
+                return fmt
     if frontmatter.get("origin") == "ECC":
         return AgentFormat.CLAUDE_CODE
+    if any(k in frontmatter for k in ("permissions", "triggers", "subagent")):
+        return AgentFormat.DEVIN
+    if any(
+        k in frontmatter
+        for k in ("argument-hint", "context", "hooks", "disallowed-tools")
+    ):
+        return AgentFormat.CLAUDE_CODE
+    if frontmatter.get("disable-model-invocation") is not None:
+        return AgentFormat.CURSOR
     return AgentFormat.GENERIC
 
 

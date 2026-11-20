@@ -8,7 +8,13 @@ from typing import Any
 from skill_bridge.formats.base import FormatExporter, register_exporter
 from skill_bridge.formats.openagents import build_standard_frontmatter
 from skill_bridge.models import AgentFormat, ConversionResult, SkillBundle
-from skill_bridge.utils import copy_skill_tree, normalize_reference_dirs, render_skill_md, slugify_name
+from skill_bridge.utils import (
+    copy_skill_tree,
+    normalize_reference_dirs,
+    prepare_dest,
+    render_skill_md,
+    slugify_name,
+)
 
 
 class CursorExporter(FormatExporter):
@@ -26,22 +32,17 @@ class CursorExporter(FormatExporter):
         explicit_only: bool = False,
     ) -> ConversionResult:
         name = slugify_name(skill_name or bundle.name)
-        dest = output_root / name
-        if dest.exists():
-            import shutil
-
-            shutil.rmtree(dest)
-        dest.mkdir(parents=True)
+        dest = prepare_dest(output_root, name)
         copy_skill_tree(bundle.root, dest)
         warnings = normalize_reference_dirs(bundle, dest)
 
-        fm: dict[str, Any] = build_standard_frontmatter(bundle, name)
+        fm: dict[str, Any] = build_standard_frontmatter(
+            bundle, name, target=self.format_id
+        )
 
-        # Cursor-specific: slash-command style skills should not auto-invoke
-        if explicit_only or bundle.frontmatter.get("disable-model-invocation"):
+        # Cursor-specific: slash-command style skills should not auto-invoke.
+        if explicit_only:
             fm["disable-model-invocation"] = True
-        elif "disable-model-invocation" in bundle.frontmatter:
-            fm["disable-model-invocation"] = bundle.frontmatter["disable-model-invocation"]
 
         (dest / "SKILL.md").write_text(render_skill_md(fm, bundle.body), encoding="utf-8")
         return ConversionResult(bundle.root, self.format_id, dest, name, warnings)

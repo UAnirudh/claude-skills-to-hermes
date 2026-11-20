@@ -229,3 +229,29 @@ def test_global_install_paths(fmt, suffix):
 )
 def test_harness_aliases(alias, expected):
     assert AgentFormat.from_string(alias) is expected
+
+
+HARNESSES = [fmt for fmt in AgentFormat if fmt is not AgentFormat.GENERIC]
+
+
+@pytest.mark.parametrize("target", HARNESSES, ids=lambda f: f.value)
+def test_install_into_every_harness(target, home):
+    """Installing into any harness pulls in every other harness's skills."""
+    target_real = os.path.realpath(global_skill_root(target))
+    by_root: dict[str, AgentFormat] = {}
+    for fmt in HARNESSES:
+        real = os.path.realpath(global_skill_root(fmt))
+        if real == target_real or real in by_root:
+            continue
+        by_root[real] = fmt
+        write_skill(global_skill_root(fmt), f"from-{fmt.value}")
+
+    report = run_adopt(target)
+
+    expected = {f"from-{fmt.value}" for fmt in by_root.values()}
+    assert {item.skill_name for item in report.items if item.action == "import"} == expected
+    for name in expected:
+        dest = report.target_root / name
+        assert (dest / "SKILL.md").is_file()
+        assert read_marker(dest)["target-format"] == target.value
+        assert read_marker(dest)["source-format"] != target.value
