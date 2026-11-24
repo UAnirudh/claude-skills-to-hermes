@@ -87,8 +87,8 @@ jobs:
           # A second install rewrites the profile for the harness just asked
           # for, so sync cannot keep refreshing a stale destination.
           skill-bridge install --harness gemini --scope project --no-sync
-          grep -q ".gemini/skills" skill-bridge.yaml
-          ! grep -q ".hermes/skills" skill-bridge.yaml
+          grep -q "format: gemini" skill-bridge.yaml
+          ! grep -q "format: hermes" skill-bridge.yaml
           # Unknown harness ids are a clean argument error, never a traceback.
           if skill-bridge install --harness not-a-harness 2>/dev/null; then
             echo "unknown harness id was accepted"
