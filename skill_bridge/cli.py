@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from collections import Counter
 from pathlib import Path
 
 import click
+import yaml
 from rich.console import Console
 from rich.table import Table
 
 from skill_bridge.adopt import AdoptReport, run_adopt
 from skill_bridge.agent_paths import detect_installed_agents, global_skill_root, resolve_skill_path
+from skill_bridge.compat import lossy_fields
 from skill_bridge.config import (
     DEFAULT_CONFIG_NAME,
+    BridgeConfig,
     auto_import_config,
     init_config_interactive,
     load_config,
     save_config,
+    update_auto_import_config,
 )
 from skill_bridge.converter import convert_batch, convert_skill
 from skill_bridge.formats.base import all_exporters, get_exporter, load_exporters
@@ -205,13 +211,92 @@ def init_cmd(
     console.print("  skill-bridge adopt --to hermes   # import every other harness")
 
 
-def _resolve_install_target(harness: str | None, config_path: Path | None) -> AgentFormat:
+def _can_prompt() -> bool:
+    """Whether asking a question is safe: a real terminal, not a pipe or CI."""
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _prompt_for_harness(detected: dict[AgentFormat, Path]) -> list[AgentFormat]:
+    """Numbered picker for the harnesses installed here; 'all' picks every one."""
+    ordered = sorted(detected, key=lambda fmt: fmt.value)
+    all_choice = len(ordered) + 1
+
+    console.print("[bold]Several harnesses are installed here.[/bold]")
+    for index, fmt in enumerate(ordered, 1):
+        console.print(f"  {index}. {fmt.value:<12} {detected[fmt]}")
+    console.print(f"  {all_choice}. all of them")
+
+    while True:
+        raw = click.prompt("Install into which harness?", default="1", show_default=False)
+        answer = str(raw).strip().lower()
+        if answer in {"a", "all", "*"}:
+            return ordered
+        if answer.isdigit():
+            number = int(answer)
+            if number == all_choice:
+                return ordered
+            if 1 <= number <= len(ordered):
+                return [ordered[number - 1]]
+        console.print(f"[yellow]Enter a number 1-{all_choice}, or 'all'.[/yellow]")
+
+
+def _unique_roots(
+    targets: list[AgentFormat], scope: str, to_path: Path | None
+) -> list[tuple[AgentFormat, Path]]:
+    """Target roots, one per real directory (Codex and Amp share .agents/skills)."""
+    roots: list[tuple[AgentFormat, Path]] = []
+    seen: set[str] = set()
+    for fmt in targets:
+        root = resolve_skill_path(fmt, scope=scope, override=to_path)
+        key = os.path.realpath(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append((fmt, root))
+    return roots
+
+
+def _existing_auto_import(path: Path) -> BridgeConfig | None:
+    """The config at ``path`` if it already has an 'auto-import' profile."""
+    if not path.is_file():
+        return None
+    try:
+        cfg = load_config(path)
+    except (OSError, ValueError, yaml.YAMLError):
+        # Unreadable configs are never rewritten without --force.
+        return None
+    return cfg if "auto-import" in cfg.profiles else None
+
+
+def _resolve_install_targets(
+    harness: str | None,
+    all_harnesses: bool,
+    config_path: Path | None,
+) -> list[AgentFormat]:
+    """Which harness(es) to install into: explicit, detected, picked or --all."""
+    if harness and all_harnesses:
+        raise click.UsageError("Use --harness or --all, not both")
     if harness:
-        return AgentFormat.from_string(harness)
+        return [AgentFormat.from_string(harness)]
 
     detected = detect_installed_agents()
+    if all_harnesses:
+        if not detected:
+            console.print(
+                "[red]No harness skill directories found.[/red] "
+                "Create one (or run a harness once), then try again."
+            )
+            raise SystemExit(1)
+        return sorted(detected, key=lambda fmt: fmt.value)
+
     if len(detected) == 1:
-        return next(iter(detected))
+        return [next(iter(detected))]
+
+    if len(detected) > 1 and _can_prompt():
+        return _prompt_for_harness(detected)
 
     for candidate in (config_path, Path.cwd() / DEFAULT_CONFIG_NAME):
         if candidate and candidate.is_file():
@@ -220,7 +305,7 @@ def _resolve_install_target(harness: str | None, config_path: Path | None) -> Ag
             except (FileNotFoundError, KeyError, ValueError):
                 continue
             if profile.targets:
-                return profile.targets[0].format
+                return [profile.targets[0].format]
 
     listing = (
         "\n".join(
@@ -231,12 +316,13 @@ def _resolve_install_target(harness: str | None, config_path: Path | None) -> Ag
     )
     console.print("[red]Could not tell which harness you are installing into.[/red]")
     console.print("Harness skill directories found:\n" + listing)
-    console.print("\nRe-run with the harness you use, e.g. skill-bridge install --harness hermes")
+    console.print("\nRe-run with --harness <id>, or install into every one with --all")
     raise SystemExit(1)
 
 
 @main.command("install")
 @click.option("-H", "--harness", default=None, help="Harness you are installing into (e.g. hermes, cursor)")
+@click.option("--all", "all_harnesses", is_flag=True, help="Install into every harness detected on this machine")
 @click.option("--from", "from_formats", multiple=True, help="Only import from these harnesses (repeatable)")
 @click.option("--scope", type=click.Choice(["global", "project", "both"]), default="global")
 @click.option("--to-path", type=click.Path(path_type=Path), default=None, help="Override the target skills directory")
@@ -247,6 +333,7 @@ def _resolve_install_target(harness: str | None, config_path: Path | None) -> Ag
 @click.option("-c", "--config", "config_path", type=click.Path(path_type=Path), default=None)
 def install_cmd(
     harness: str | None,
+    all_harnesses: bool,
     from_formats: tuple[str, ...],
     scope: str,
     to_path: Path | None,
@@ -259,26 +346,52 @@ def install_cmd(
     """Install into your harness: convert skills meant for every other harness.
 
     Detects the other agent harnesses on this machine and makes their skills work
-    in yours. Writes an 'auto-import' profile so `skill-bridge sync` keeps them
-    up to date afterwards.
+    in yours. With no --harness it uses the only detected harness, or asks you
+    to pick when several are installed (--all installs into every one). Writes an
+    'auto-import' profile so `skill-bridge sync` keeps them up to date.
     """
     load_exporters()
-    target = _resolve_install_target(harness, config_path)
-    resolved_scope = "project" if scope == "project" else "global"
-    target_root = resolve_skill_path(target, scope=resolved_scope, override=to_path)
+    targets = _resolve_install_targets(harness, all_harnesses, config_path)
+    if to_path and len(targets) > 1:
+        raise click.UsageError("--to-path needs a single target; use --harness")
 
-    console.print(f"[bold]Harness:[/bold] {target.value}")
-    console.print(f"[bold]Skills go to:[/bold] {target_root}")
+    resolved_scope = "project" if scope == "project" else "global"
+    roots = _unique_roots(targets, resolved_scope, to_path)
+    if len(roots) < len(targets):
+        console.print(
+            f"[dim]{len(targets) - len(roots)} harness(es) share a skill directory; "
+            "installing into each directory once[/dim]"
+        )
+    targets = [fmt for fmt, _ in roots]
+
+    if len(roots) == 1:
+        console.print(f"[bold]Harness:[/bold] {roots[0][0].value}")
+        console.print(f"[bold]Skills go to:[/bold] {roots[0][1]}")
+    else:
+        console.print(
+            f"[bold]Harnesses:[/bold] {', '.join(fmt.value for fmt in targets)}"
+        )
 
     sources = [AgentFormat.from_string(f) for f in from_formats]
     cfg_out = config_path or Path.cwd() / DEFAULT_CONFIG_NAME
+    existing = _existing_auto_import(cfg_out) if all_harnesses else None
     if dry_run:
         console.print(f"[dim]Dry run: would write {cfg_out}[/dim]")
-    elif cfg_out.exists() and not force:
+    elif cfg_out.exists() and not force and existing is None:
         console.print(f"[dim]Keeping existing {cfg_out}[/dim]")
+    elif existing is not None:
+        cfg = update_auto_import_config(
+            existing,
+            targets,
+            from_formats=sources or None,
+            scope=scope,
+            target_path=to_path,
+        )
+        saved = save_config(cfg, cfg_out)
+        console.print(f"{OK} Updated {saved} (profile 'auto-import')")
     else:
         cfg = auto_import_config(
-            target,
+            targets,
             from_formats=sources or None,
             scope=scope,
             target_path=to_path,
@@ -290,16 +403,20 @@ def install_cmd(
         console.print("\nNext: skill-bridge sync")
         return
 
-    report = run_adopt(
-        target,
-        from_formats=sources or None,
-        scope=scope,
-        target_path=to_path,
-        force=force,
-        validate=not no_validate,
-        dry_run=dry_run,
-    )
-    _print_adopt(report, dry_run=dry_run)
+    for target, target_root in roots:
+        if len(roots) > 1:
+            console.print(f"\n[bold]Harness:[/bold] {target.value}")
+            console.print(f"[bold]Skills go to:[/bold] {target_root}")
+        report = run_adopt(
+            target,
+            from_formats=sources or None,
+            scope=scope,
+            target_path=to_path,
+            force=force,
+            validate=not no_validate,
+            dry_run=dry_run,
+        )
+        _print_adopt(report, dry_run=dry_run)
     if not dry_run:
         console.print("\nKeep it current: [cyan]skill-bridge sync[/cyan] or [cyan]skill-bridge watch[/cyan]")
 
@@ -360,16 +477,47 @@ def inspect_cmd(source: Path) -> None:
 
 @main.command("validate")
 @click.argument("source", type=click.Path(exists=True, file_okay=False, path_type=Path))
-def validate_cmd(source: Path) -> None:
-    """Validate a skill against the Agent Skills specification."""
+@click.option("--harness", default=None, help="Also check what converting into this harness would lose")
+@click.option("--fail-on-lossy", is_flag=True, help="Exit 1 when the --harness check finds losses")
+def validate_cmd(source: Path, harness: str | None, fail_on_lossy: bool) -> None:
+    """Validate a skill against the Agent Skills specification.
+
+    With --harness, also report fields that harness cannot express natively
+    (they are parked in metadata for a later hop, but this harness will not
+    honor them). --fail-on-lossy turns those into a failure, e.g. for CI.
+    """
+    if fail_on_lossy and not harness:
+        raise click.UsageError("--fail-on-lossy needs --harness")
+
     bundle = load_skill(source)
     report = validate_skill(bundle)
     if report.ok and not report.warnings():
         console.print(f"{OK} Skill is valid")
-        return
-    for issue in report.issues:
-        color = "red" if issue.level == "error" else "yellow"
-        console.print(f"[{color}]{issue.level.upper()}[/] {issue.field}: {issue.message}")
+    else:
+        for issue in report.issues:
+            color = "red" if issue.level == "error" else "yellow"
+            console.print(f"[{color}]{issue.level.upper()}[/] {issue.field}: {issue.message}")
+
+    if harness:
+        load_exporters()
+        try:
+            target = AgentFormat.from_string(harness)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise SystemExit(2) from exc
+        lost = lossy_fields(bundle.frontmatter, target)
+        for field in lost:
+            console.print(
+                f"[yellow]LOSSY[/] {field}: {target.value} cannot express this "
+                "natively; it is parked in metadata.skill-bridge.extra for a "
+                "later hop"
+            )
+        if lost:
+            if fail_on_lossy:
+                raise SystemExit(1)
+        else:
+            console.print(f"{OK} Nothing lost converting to {target.value}")
+
     if not report.ok:
         raise SystemExit(1)
 

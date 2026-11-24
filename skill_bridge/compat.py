@@ -188,6 +188,39 @@ def manual_invocation(frontmatter: dict[str, Any]) -> bool | None:
     return None
 
 
+#: Keys whose meaning is "how may this be invoked?", not a feature of their own.
+INVOCATION_FIELDS: frozenset[str] = frozenset(
+    {"triggers", "disable-model-invocation", "user-invocable"}
+)
+
+
+def lossy_fields(frontmatter: dict[str, Any], target: AgentFormat) -> list[str]:
+    """Fields ``target`` cannot express natively, for ``validate --harness``.
+
+    They are not discarded — conversion parks them in
+    ``metadata.skill-bridge.extra`` — but the harness reading the skill now
+    never sees them, so the conversion is lossy for this target. Invocation
+    intent is *translated* rather than parked wherever the target has a
+    matching field, so those keys are not reported as lost; a target with no
+    invocation field at all reports ``invocation`` itself.
+    """
+    native = native_fields(target)
+    lost = {
+        key
+        for key, value in frontmatter.items()
+        if key not in {"name", "description", "metadata"}
+        and value is not None
+        and key not in native
+    }
+
+    intent = manual_invocation(frontmatter)
+    if intent is not None:
+        lost -= INVOCATION_FIELDS
+        if not (native & INVOCATION_FIELDS):
+            lost.add("invocation")
+    return sorted(lost)
+
+
 def _coerce(key: str, value: Any, target: AgentFormat) -> Any:
     """Shape a shared field the way ``target`` expects it."""
     if key == "allowed-tools":
@@ -257,10 +290,14 @@ def adapt_frontmatter(
     elif invocation is False:
         # Model-only (Devin ``triggers: [model]``, Claude ``user-invocable:
         # false``): the harness must hide it from the user, so the default here
-        # is False, not True.
-        carrier.pop("manual-invocation", None)
+        # is False, not True. When the target has no field for it, carry the
+        # intent in metadata as well, so a hop through a minimal harness cannot
+        # turn a model-only skill back into a user-invocable one.
         if "user-invocable" in native:
             frontmatter.setdefault("user-invocable", False)
+            carrier.pop("manual-invocation", None)
+        else:
+            carrier["manual-invocation"] = False
     else:
         carrier.pop("manual-invocation", None)
 

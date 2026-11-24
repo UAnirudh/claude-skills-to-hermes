@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -111,8 +113,21 @@ def default_config(project: Path | None = None) -> BridgeConfig:
     return BridgeConfig(profiles={"default": profile}, default_profile="default")
 
 
+def _dedupe_locations(locations: Iterable[SkillLocation]) -> list[SkillLocation]:
+    """Keep the first location for each real skill directory."""
+    unique: list[SkillLocation] = []
+    seen: set[str] = set()
+    for loc in locations:
+        key = os.path.realpath(loc.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(loc)
+    return unique
+
+
 def auto_import_config(
-    target: AgentFormat,
+    target: AgentFormat | Iterable[AgentFormat],
     *,
     from_formats: list[AgentFormat] | None = None,
     scope: str = "global",
@@ -121,23 +136,42 @@ def auto_import_config(
 ) -> BridgeConfig:
     """Profile that pulls skills from every other harness into ``target``.
 
+    ``target`` may be one harness or several (``install --all``); several gives
+    one profile with several targets, so a single ``sync`` refreshes them all.
     ``scope`` keeps the written profile pointed at the directory the import
     actually wrote to: ``install --scope project`` targets the project root, so
     ``sync`` and ``watch`` refresh that copy instead of a separate global one.
     """
+    if isinstance(target, AgentFormat):
+        wanted = [target]
+    else:
+        wanted = list(target)
+
+    target_formats: list[AgentFormat] = []
+    for fmt in wanted:
+        if fmt is not AgentFormat.GENERIC and fmt not in target_formats:
+            target_formats.append(fmt)
+    if not target_formats:
+        raise ValueError("auto_import_config needs at least one target harness")
+    if target_path and len(target_formats) > 1:
+        raise ValueError("target_path only makes sense for a single target harness")
+
     resolved_scope = "project" if scope == "project" else "global"
-    targets = [
+    # Harnesses can share a directory (Codex and Amp both use .agents/skills);
+    # writing one target per format would convert every skill twice.
+    targets = _dedupe_locations(
         SkillLocation(
-            format=target,
+            format=fmt,
             path=resolve_skill_path(
-                target, scope=resolved_scope, project=project, override=target_path
+                fmt, scope=resolved_scope, project=project, override=target_path
             ),
             scope="custom" if target_path else resolved_scope,
-        ),
-    ]
+        )
+        for fmt in target_formats
+    )
     sources: list[SkillLocation] = []
     for fmt in from_formats or []:
-        if fmt == target:
+        if fmt in target_formats:
             continue
         sources.append(
             SkillLocation(
@@ -158,6 +192,44 @@ def auto_import_config(
         validate=True,
     )
     return BridgeConfig(profiles={"auto-import": profile}, default_profile="auto-import")
+
+
+def update_auto_import_config(
+    existing: BridgeConfig,
+    target: AgentFormat | Iterable[AgentFormat],
+    *,
+    from_formats: list[AgentFormat] | None = None,
+    scope: str = "global",
+    project: Path | None = None,
+    target_path: Path | None = None,
+) -> BridgeConfig:
+    """Refresh the ``auto-import`` profile in ``existing`` for ``target``.
+
+    Targets already in the profile are kept, so a harness whose directory is
+    missing right now is not dropped, and newly detected harnesses are added.
+    An explicit ``sources:`` list the user edited and every other profile are
+    preserved; passing ``from_formats`` replaces the sources as usual.
+    """
+    cfg = auto_import_config(
+        target,
+        from_formats=from_formats,
+        scope=scope,
+        project=project,
+        target_path=target_path,
+    )
+    profile = cfg.profiles["auto-import"]
+    old = existing.profiles.get("auto-import")
+    if old is not None:
+        profile.targets = _dedupe_locations([*old.targets, *profile.targets])
+        if not profile.sources and old.sources:
+            profile.sources = list(old.sources)
+            profile.auto_sources = False
+    for name, other in existing.profiles.items():
+        if name != "auto-import":
+            cfg.profiles[name] = other
+    if existing.default_profile in cfg.profiles:
+        cfg.default_profile = existing.default_profile
+    return cfg
 
 
 def config_to_dict(config: BridgeConfig) -> dict[str, Any]:

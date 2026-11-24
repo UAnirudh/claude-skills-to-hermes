@@ -20,6 +20,11 @@ def profile_sources(profile: SyncProfile, *, project: Path | None = None) -> lis
     """Resolve a profile's source harnesses, expanding ``sources: auto``."""
     if profile.auto_sources:
         target_formats = {t.format for t in profile.targets}
+        # A single-target profile imports from every *other* harness. A
+        # multi-target profile (`install --all`) has no other harnesses left,
+        # so each target is a source for the others instead; sync_profile still
+        # skips writing a skill into the directory it came from.
+        skip_targets = len(profile.targets) <= 1
         scope = profile.source_scope
         return [
             SkillLocation(format=fmt, path=path, scope=scope)
@@ -27,7 +32,7 @@ def profile_sources(profile: SyncProfile, *, project: Path | None = None) -> lis
                 detect_installed_agents(scope=scope, project=project).items(),
                 key=lambda kv: kv[0].value,
             )
-            if fmt not in target_formats
+            if not (skip_targets and fmt in target_formats)
         ]
     if profile.sources:
         return list(profile.sources)

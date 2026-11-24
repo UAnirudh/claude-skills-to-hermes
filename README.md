@@ -66,10 +66,13 @@ skill-bridge install --harness hermes   # convert every other harness's skills i
 3. writes a `skill-bridge.yaml` profile called `auto-import` so `skill-bridge sync` and `skill-bridge watch` keep them current (`watch` follows every source the profile resolves, including harnesses installed while it runs; a `--scope project` install writes a project-scoped profile that keeps refreshing the project copy),
 4. records a `.skill-bridge.json` provenance marker in each converted skill.
 
+With no `--harness`, `install` uses the only harness detected on the machine and, when several are installed, shows a numbered picker (`all` in the picker installs into every one). `--all` does the same without prompting and writes one `auto-import` profile whose `targets:` list covers each harness, so `sync` fans a change in any of them out to all the rest. Re-running `install --all` refreshes that profile instead of leaving it stale: newly detected harnesses are added, while targets already in it, any `sources:` you edited, and other profiles stay as they are. Harnesses that share one skill directory (Codex and Amp both use `~/.agents/skills`) are installed into once.
+
 Useful flags:
 
 ```bash
 skill-bridge install --harness cursor --dry-run        # preview, write nothing
+skill-bridge install --all                             # every harness detected here
 skill-bridge install --harness claude-code --from codex --from gemini
 skill-bridge install --harness opencode --scope project
 skill-bridge adopt --to copilot                        # import without writing config
@@ -179,12 +182,12 @@ skill-bridge reverse --from gemini --to windsurf \
 
 ```
 skill-bridge init [--source claude-code] [--target hermes] [--target codex]
-skill-bridge install --harness <fmt> [--from <fmt>] [--scope global|project|both] [--dry-run] [--force]
+skill-bridge install [--harness <fmt> | --all] [--from <fmt>] [--scope global|project|both] [--dry-run] [--force]
 skill-bridge adopt --to <fmt> [--from <fmt>] [--scope ...] [--dry-run] [--force]
 skill-bridge detect                    # every harness + whether it is installed here
 skill-bridge list-formats
 skill-bridge inspect <skill-dir>
-skill-bridge validate <skill-dir>
+skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME]
@@ -222,6 +225,13 @@ that *can* express those fields, so `Claude Code → Codex → Gemini → Claude
 returns the original `allowed-tools`, `model` and `argument-hint`. Each output
 therefore carries only keys its harness actually reads — which matters because
 claude.ai uploads reject unknown frontmatter keys rather than ignoring them.
+
+Invocation intent is carried in `metadata.skill-bridge.manual-invocation` too,
+so `Devin (triggers: [model]) → Codex → Claude Code` still comes back as
+`user-invocable: false` instead of quietly becoming user-invocable again. Run
+`skill-bridge validate <skill-dir> --harness <fmt>` to see which fields that
+harness cannot express natively, and add `--fail-on-lossy` to make it a CI
+error.
 
 Source detection is just as broad: skills are attributed to a harness by any of
 its install layouts, including the user-level ones (`~/.config/devin/skills`,
