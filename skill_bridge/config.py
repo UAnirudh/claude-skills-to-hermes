@@ -202,11 +202,15 @@ def update_auto_import_config(
     scope: str = "global",
     project: Path | None = None,
     target_path: Path | None = None,
+    replace_targets: bool = False,
 ) -> BridgeConfig:
     """Refresh the ``auto-import`` profile in ``existing`` for ``target``.
 
     Targets already in the profile are kept, so a harness whose directory is
     missing right now is not dropped, and newly detected harnesses are added.
+    ``replace_targets`` writes exactly ``target`` instead: an explicit
+    ``install --harness hermes --scope project`` must move the profile to the
+    project directory rather than keep refreshing the global one.
     An explicit ``sources:`` list the user edited and every other profile are
     preserved; passing ``from_formats`` replaces the sources as usual.
     """
@@ -220,7 +224,8 @@ def update_auto_import_config(
     profile = cfg.profiles["auto-import"]
     old = existing.profiles.get("auto-import")
     if old is not None:
-        profile.targets = _dedupe_locations([*old.targets, *profile.targets])
+        if not replace_targets:
+            profile.targets = _dedupe_locations([*old.targets, *profile.targets])
         if not profile.sources and old.sources:
             profile.sources = list(old.sources)
             profile.auto_sources = False

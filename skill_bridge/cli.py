@@ -374,18 +374,25 @@ def install_cmd(
 
     sources = [AgentFormat.from_string(f) for f in from_formats]
     cfg_out = config_path or Path.cwd() / DEFAULT_CONFIG_NAME
-    existing = _existing_auto_import(cfg_out) if all_harnesses else None
+    existing = _existing_auto_import(cfg_out)
     if dry_run:
         console.print(f"[dim]Dry run: would write {cfg_out}[/dim]")
     elif cfg_out.exists() and not force and existing is None:
-        console.print(f"[dim]Keeping existing {cfg_out}[/dim]")
-    elif existing is not None:
+        # Never rewrite a config we do not understand, but say what it means.
+        destinations = " and ".join(str(root) for _, root in roots)
+        console.print(
+            f"{WARN} Keeping {cfg_out}: it has no readable 'auto-import' profile, "
+            f"so sync and watch will not follow {destinations}."
+        )
+        console.print("[dim]Re-run with --force to replace the config.[/dim]")
+    elif existing is not None and not force:
         cfg = update_auto_import_config(
             existing,
             targets,
             from_formats=sources or None,
             scope=scope,
             target_path=to_path,
+            replace_targets=not all_harnesses,
         )
         saved = save_config(cfg, cfg_out)
         console.print(f"{OK} Updated {saved} (profile 'auto-import')")

@@ -4,11 +4,20 @@ import os
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from skill_bridge import agent_paths
 from skill_bridge.adopt import plan_adopt, run_adopt, source_roots
 from skill_bridge.agent_paths import global_skill_root
-from skill_bridge.config import auto_import_config, load_config, save_config
+from skill_bridge.cli import main
+from skill_bridge.config import (
+    BridgeConfig,
+    SkillLocation,
+    SyncProfile,
+    auto_import_config,
+    load_config,
+    save_config,
+)
 from skill_bridge.models import AgentFormat
 from skill_bridge.provenance import is_bridge_generated, read_marker
 from skill_bridge.sync import run_sync
@@ -177,6 +186,76 @@ def test_project_scope_auto_import_config_uses_project_sources(tmp_path, monkeyp
     ).get_profile(None)
 
     assert profile.sources[0].path == project / ".gemini" / "skills"
+
+
+def test_reinstall_with_new_scope_moves_the_auto_import_profile(tmp_path, monkeypatch, home):
+    """A re-run with another scope must move the profile, not keep both targets."""
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(global_skill_root(AgentFormat.CLAUDE_CODE), "global-skill")
+    write_skill(project / ".cursor" / "skills", "project-skill")
+    cfg_path = project / "skill-bridge.yaml"
+
+    first = CliRunner().invoke(main, ["install", "--harness", "hermes", "--no-sync"])
+    assert first.exit_code == 0, first.output
+    assert load_config(cfg_path).get_profile(None).targets[0].path == global_skill_root(AgentFormat.HERMES)
+
+    second = CliRunner().invoke(
+        main, ["install", "--harness", "hermes", "--scope", "project", "--no-sync"]
+    )
+    assert second.exit_code == 0, second.output
+    assert "Updated" in " ".join(second.output.split())
+
+    profile = load_config(cfg_path).get_profile(None)
+    assert profile.source_scope == "project"
+    assert [t.path for t in profile.targets] == [project / ".hermes" / "skills"]
+
+    run_sync(config_path=cfg_path)
+    assert (project / ".hermes" / "skills" / "project-skill" / "SKILL.md").is_file()
+
+
+def test_reinstall_warns_when_config_has_no_auto_import_profile(tmp_path, monkeypatch, home):
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".cursor" / "skills", "project-skill")
+    cfg_path = project / "skill-bridge.yaml"
+    hand_written = BridgeConfig(
+        profiles={
+            "mine": SyncProfile(
+                name="mine",
+                auto_sources=True,
+                targets=[
+                    SkillLocation(
+                        format=AgentFormat.HERMES,
+                        path=project / ".hermes" / "skills",
+                        scope="project",
+                    )
+                ],
+            )
+        },
+        default_profile="mine",
+    )
+    save_config(hand_written, cfg_path)
+
+    result = CliRunner().invoke(
+        main, ["install", "--harness", "hermes", "--scope", "project", "--no-sync"]
+    )
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "no readable 'auto-import' profile" in output
+    assert "--force" in output
+    loaded = load_config(cfg_path)
+    assert loaded.default_profile == "mine"
+    assert list(loaded.profiles) == ["mine"]
+
+    forced = CliRunner().invoke(
+        main, ["install", "--harness", "hermes", "--scope", "project", "--force", "--no-sync"]
+    )
+    assert forced.exit_code == 0, forced.output
+    assert list(load_config(cfg_path).profiles) == ["auto-import"]
 
 
 def test_project_scope_import(tmp_path, monkeypatch, home):
