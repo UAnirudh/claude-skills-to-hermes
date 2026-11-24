@@ -13,7 +13,11 @@ from rich.console import Console
 from rich.table import Table
 
 from skill_bridge.adopt import AdoptReport, run_adopt
-from skill_bridge.agent_paths import detect_installed_agents, global_skill_root, resolve_skill_path
+from skill_bridge.agent_paths import (
+    detect_installed_agents,
+    global_skill_root,
+    resolve_skill_path,
+)
 from skill_bridge.compat import lossy_fields
 from skill_bridge.config import (
     DEFAULT_CONFIG_NAME,
@@ -45,6 +49,14 @@ ACTION_STYLES = {
     "skip": "dim",
     "error": "red",
 }
+
+
+def _parse_format(value: str) -> AgentFormat:
+    """Harness id or alias -> AgentFormat, as a clean CLI error when unknown."""
+    try:
+        return AgentFormat.from_string(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
 
 
 def _print_results(results, *, show_path: bool = True) -> None:
@@ -119,16 +131,26 @@ def list_formats_cmd() -> None:
 
 
 @main.command("detect")
-def detect_cmd() -> None:
+@click.option(
+    "--scope",
+    type=click.Choice(["global", "project", "both"]),
+    default="global",
+    help="Where to look for harness skill directories",
+)
+def detect_cmd(scope: str) -> None:
     """Show every supported harness and whether its skill directory exists here."""
     load_exporters()
-    installed = detect_installed_agents()
+    scopes = ["global", "project"] if scope == "both" else [scope]
+    installed: dict[AgentFormat, tuple[Path, str]] = {}
+    for one_scope in scopes:
+        for fmt, path in detect_installed_agents(scope=one_scope).items():
+            installed.setdefault(fmt, (path, one_scope))
     counts: dict[str, int] = {}
 
     table = Table(title="Agent harnesses on this machine")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
-    table.add_column("Global skill directory")
+    table.add_column("Skill directory")
     table.add_column("Status")
     table.add_column("Skills", justify="right")
 
@@ -136,20 +158,25 @@ def detect_cmd() -> None:
         fmt = exporter.format_id
         if fmt is AgentFormat.GENERIC:
             continue
-        path = global_skill_root(fmt)
         found = fmt in installed
         if found:
+            path, found_scope = installed[fmt]
             key = str(path)
             if key not in counts:
                 counts[key] = len(find_skills(path))
             count = str(counts[key])
+            status = "[green]detected[/green]"
+            if scope == "both":
+                status += f" [dim]({found_scope})[/dim]"
         else:
+            path = resolve_skill_path(fmt, scope=scopes[0])
             count = "-"
+            status = "[dim]not found[/dim]"
         table.add_row(
             fmt.value,
             exporter.display_name,
             str(path),
-            "[green]detected[/green]" if found else "[dim]not found[/dim]",
+            status,
             count,
         )
     console.print(table)
@@ -195,8 +222,8 @@ def init_cmd(
         console.print(f"[red]Config exists: {out_path}[/red]  Use --force to overwrite")
         raise SystemExit(1)
 
-    src = AgentFormat.from_string(source_format)
-    tgts = [AgentFormat.from_string(t) for t in targets]
+    src = _parse_format(source_format)
+    tgts = [_parse_format(t) for t in targets]
     config = init_config_interactive(source_format=src, target_formats=tgts)
     saved = save_config(config, out_path)
 
@@ -271,18 +298,29 @@ def _existing_auto_import(path: Path) -> BridgeConfig | None:
     return cfg if "auto-import" in cfg.profiles else None
 
 
+def _detected_harnesses(scopes: list[str]) -> dict[AgentFormat, Path]:
+    """Harness skill directories found in any of ``scopes`` (global wins)."""
+    found: dict[AgentFormat, Path] = {}
+    for one_scope in scopes:
+        for fmt, path in detect_installed_agents(scope=one_scope).items():
+            found.setdefault(fmt, path)
+    return found
+
+
 def _resolve_install_targets(
     harness: str | None,
     all_harnesses: bool,
     config_path: Path | None,
+    scopes: list[str] | None = None,
 ) -> list[AgentFormat]:
     """Which harness(es) to install into: explicit, detected, picked or --all."""
     if harness and all_harnesses:
         raise click.UsageError("Use --harness or --all, not both")
     if harness:
-        return [AgentFormat.from_string(harness)]
+        return [_parse_format(harness)]
 
-    detected = detect_installed_agents()
+    scopes = scopes or ["global"]
+    detected = _detected_harnesses(scopes)
     if all_harnesses:
         if not detected:
             console.print(
@@ -315,7 +353,7 @@ def _resolve_install_targets(
         or "  (none found)"
     )
     console.print("[red]Could not tell which harness you are installing into.[/red]")
-    console.print("Harness skill directories found:\n" + listing)
+    console.print(f"Harness skill directories found ({' + '.join(scopes)}):\n" + listing)
     console.print("\nRe-run with --harness <id>, or install into every one with --all")
     raise SystemExit(1)
 
@@ -351,18 +389,32 @@ def install_cmd(
     'auto-import' profile so `skill-bridge sync` keeps them up to date.
     """
     load_exporters()
-    targets = _resolve_install_targets(harness, all_harnesses, config_path)
+    resolved_scopes = (
+        ["global", "project"]
+        if scope == "both"
+        else ["project" if scope == "project" else "global"]
+    )
+    targets = _resolve_install_targets(harness, all_harnesses, config_path, resolved_scopes)
     if to_path and len(targets) > 1:
         raise click.UsageError("--to-path needs a single target; use --harness")
 
-    resolved_scope = "project" if scope == "project" else "global"
-    roots = _unique_roots(targets, resolved_scope, to_path)
-    if len(roots) < len(targets):
+    roots: list[tuple[AgentFormat, Path, str]] = []
+    seen_roots: set[str] = set()
+    shared = 0
+    for one_scope in resolved_scopes:
+        scoped = _unique_roots(targets, one_scope, to_path)
+        shared = max(shared, len(targets) - len(scoped))
+        for fmt, root in scoped:
+            key = os.path.realpath(root)
+            if key in seen_roots:
+                continue
+            seen_roots.add(key)
+            roots.append((fmt, root, one_scope))
+    if shared:
         console.print(
-            f"[dim]{len(targets) - len(roots)} harness(es) share a skill directory; "
+            f"[dim]{shared} harness(es) share a skill directory; "
             "installing into each directory once[/dim]"
         )
-    targets = [fmt for fmt, _ in roots]
 
     if len(roots) == 1:
         console.print(f"[bold]Harness:[/bold] {roots[0][0].value}")
@@ -371,15 +423,17 @@ def install_cmd(
         console.print(
             f"[bold]Harnesses:[/bold] {', '.join(fmt.value for fmt in targets)}"
         )
+        if scope == "both":
+            console.print(f"[bold]Scopes:[/bold] {', '.join(resolved_scopes)}")
 
-    sources = [AgentFormat.from_string(f) for f in from_formats]
+    sources = [_parse_format(f) for f in from_formats]
     cfg_out = config_path or Path.cwd() / DEFAULT_CONFIG_NAME
     existing = _existing_auto_import(cfg_out)
     if dry_run:
         console.print(f"[dim]Dry run: would write {cfg_out}[/dim]")
     elif cfg_out.exists() and not force and existing is None:
         # Never rewrite a config we do not understand, but say what it means.
-        destinations = " and ".join(str(root) for _, root in roots)
+        destinations = " and ".join(str(root) for _, root, _ in roots)
         console.print(
             f"{WARN} Keeping {cfg_out}: it has no readable 'auto-import' profile, "
             f"so sync and watch will not follow {destinations}."
@@ -410,14 +464,14 @@ def install_cmd(
         console.print("\nNext: skill-bridge sync")
         return
 
-    for target, target_root in roots:
+    for target, target_root, write_scope in roots:
         if len(roots) > 1:
             console.print(f"\n[bold]Harness:[/bold] {target.value}")
             console.print(f"[bold]Skills go to:[/bold] {target_root}")
         report = run_adopt(
             target,
             from_formats=sources or None,
-            scope=scope,
+            scope=write_scope,
             target_path=to_path,
             force=force,
             validate=not no_validate,
@@ -454,10 +508,10 @@ def adopt_cmd(
       skill-bridge adopt --to cursor --from claude-code --from codex
     """
     load_exporters()
-    target = AgentFormat.from_string(target_format)
+    target = _parse_format(target_format)
     report = run_adopt(
         target,
-        from_formats=[AgentFormat.from_string(f) for f in from_formats] or None,
+        from_formats=[_parse_format(f) for f in from_formats] or None,
         scope=scope,
         target_path=to_path,
         force=force,
@@ -507,11 +561,7 @@ def validate_cmd(source: Path, harness: str | None, fail_on_lossy: bool) -> None
 
     if harness:
         load_exporters()
-        try:
-            target = AgentFormat.from_string(harness)
-        except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise SystemExit(2) from exc
+        target = _parse_format(harness)
         lost = lossy_fields(bundle.frontmatter, target)
         for field in lost:
             console.print(
@@ -554,7 +604,7 @@ def convert_cmd(
 ) -> None:
     """Convert one skill or a tree of skills to target agent format(s)."""
     load_exporters()
-    formats = [AgentFormat.from_string(t) for t in targets]
+    formats = [_parse_format(t) for t in targets]
 
     if (source / "SKILL.md").is_file() or (source / "skill.md").is_file():
         skill_dirs = [source]
@@ -609,8 +659,8 @@ def reverse_cmd(
 
       skill-bridge reverse --from codex --to cursor --scope project
     """
-    src_fmt = AgentFormat.from_string(source_format)
-    tgt_fmt = AgentFormat.from_string(target_format)
+    src_fmt = _parse_format(source_format)
+    tgt_fmt = _parse_format(target_format)
 
     src_root = resolve_skill_path(src_fmt, scope=scope, override=from_path)
     tgt_root = resolve_skill_path(tgt_fmt, scope=scope, override=to_path)
@@ -725,7 +775,7 @@ def batch_cmd(
     if all_agents:
         formats = [e.format_id for e in all_exporters()]
     elif targets:
-        formats = [AgentFormat.from_string(t) for t in targets]
+        formats = [_parse_format(t) for t in targets]
     else:
         console.print("[red]Specify --all-agents or one or more --to formats[/red]")
         raise SystemExit(1)
@@ -740,7 +790,7 @@ def batch_cmd(
 @click.option("--scope", type=click.Choice(["global", "project", "both"]), default="global")
 def paths_cmd(format_name: str, scope: str) -> None:
     """Print the default install path for an agent format."""
-    fmt = AgentFormat.from_string(format_name)
+    fmt = _parse_format(format_name)
     load_exporters()
     if scope == "both":
         for name in ("global", "project"):

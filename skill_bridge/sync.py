@@ -10,10 +10,33 @@ from skill_bridge.config import BridgeConfig, SkillLocation, SyncProfile, load_c
 from skill_bridge.converter import convert_skill
 from skill_bridge.formats.base import load_exporters
 from skill_bridge.models import AgentFormat, ConversionResult
-from skill_bridge.parser import find_skills, is_skill_dir
+from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.utils import slugify_name
 
 load_exporters()
+
+
+def _detected_sources(
+    scope: str, project: Path | None
+) -> list[tuple[AgentFormat, Path, str]]:
+    """Every harness directory in ``scope``; ``both`` keeps both copies.
+
+    A harness can differ between scopes (a global Cursor install plus a
+    project-only one), so both paths are kept instead of letting one shadow
+    the other.
+    """
+    scopes = ["global", "project"] if scope == "both" else [scope]
+    found: list[tuple[AgentFormat, Path, str]] = []
+    seen: set[str] = set()
+    for one_scope in scopes:
+        detected = detect_installed_agents(scope=one_scope, project=project)
+        for fmt, path in sorted(detected.items(), key=lambda kv: kv[0].value):
+            key = os.path.realpath(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append((fmt, path, one_scope))
+    return found
 
 
 def profile_sources(profile: SyncProfile, *, project: Path | None = None) -> list[SkillLocation]:
@@ -25,18 +48,34 @@ def profile_sources(profile: SyncProfile, *, project: Path | None = None) -> lis
         # so each target is a source for the others instead; sync_profile still
         # skips writing a skill into the directory it came from.
         skip_targets = len(profile.targets) <= 1
-        scope = profile.source_scope
         return [
-            SkillLocation(format=fmt, path=path, scope=scope)
-            for fmt, path in sorted(
-                detect_installed_agents(scope=scope, project=project).items(),
-                key=lambda kv: kv[0].value,
-            )
+            SkillLocation(format=fmt, path=path, scope=one_scope)
+            for fmt, path, one_scope in _detected_sources(profile.source_scope, project)
             if not (skip_targets and fmt in target_formats)
         ]
     if profile.sources:
         return list(profile.sources)
     return [profile.source] if profile.source else []
+
+
+def _skills_matching(root: Path, skill_name: str) -> list[Path]:
+    """Skill directories ``root`` holds for a name or alias like ``My Skill``.
+
+    A skill is named by its frontmatter ``name``, which need not match its
+    folder: ``sync --skill my-fancy-skill`` must find ``My Fancy Skill/``.
+    """
+    wanted = slugify_name(skill_name)
+    matched: list[Path] = []
+    for skill_dir in find_skills(root):
+        if slugify_name(skill_dir.name) == wanted:
+            matched.append(skill_dir)
+            continue
+        try:
+            if slugify_name(load_skill(skill_dir).name) == wanted:
+                matched.append(skill_dir)
+        except (OSError, ValueError):
+            continue
+    return matched
 
 
 def collect_source_skills(
@@ -54,8 +93,7 @@ def collect_source_skills(
         if not root.is_dir():
             continue
         if skill_name:
-            candidate = root / skill_name
-            skill_dirs = [candidate] if is_skill_dir(candidate) else []
+            skill_dirs = _skills_matching(root, skill_name)
         else:
             skill_dirs = find_skills(root)
 

@@ -1,6 +1,6 @@
 # Skill Bridge
 
-[![CI](https://github.com/YOUR_USERNAME/skill-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/skill-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/UAnirudh/claude-skills-to-hermes/actions/workflows/ci.yml/badge.svg)](https://github.com/UAnirudh/claude-skills-to-hermes/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Agent Skills](https://img.shields.io/badge/spec-agentskills.io-green.svg)](https://agentskills.io)
@@ -26,8 +26,8 @@ Every major coding agent now uses the same core format: a folder with `SKILL.md`
 ### Windows
 
 ```powershell
-git clone https://github.com/YOUR_USERNAME/skill-bridge.git
-cd skill-bridge
+git clone https://github.com/UAnirudh/claude-skills-to-hermes.git
+cd claude-skills-to-hermes
 .\setup.ps1
 .\.venv\Scripts\Activate.ps1
 skill-bridge detect
@@ -36,8 +36,8 @@ skill-bridge detect
 ### macOS / Linux
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/skill-bridge.git
-cd skill-bridge
+git clone https://github.com/UAnirudh/claude-skills-to-hermes.git
+cd claude-skills-to-hermes
 chmod +x setup.sh && ./setup.sh
 source .venv/bin/activate
 skill-bridge detect
@@ -66,7 +66,9 @@ skill-bridge install --harness hermes   # convert every other harness's skills i
 3. writes a `skill-bridge.yaml` profile called `auto-import` so `skill-bridge sync` and `skill-bridge watch` keep them current (`watch` follows every source the profile resolves, including harnesses installed while it runs; a `--scope project` install writes a project-scoped profile that keeps refreshing the project copy),
 4. records a `.skill-bridge.json` provenance marker in each converted skill.
 
-With no `--harness`, `install` uses the only harness detected on the machine and, when several are installed, shows a numbered picker (`all` in the picker installs into every one). `--all` does the same without prompting and writes one `auto-import` profile whose `targets:` list covers each harness, so `sync` fans a change in any of them out to all the rest. Re-running `install --all` refreshes that profile instead of leaving it stale: newly detected harnesses are added, while targets already in it, any `sources:` you edited, and other profiles stay as they are. Harnesses that share one skill directory (Codex and Amp both use `~/.agents/skills`) are installed into once.
+With no `--harness`, `install` uses the only harness detected on the machine and, when several are installed, shows a numbered picker (`all` in the picker installs into every one). Detection follows `--scope`, so `install --scope project` offers the harnesses that live in this project. `--all` does the same without prompting and writes one `auto-import` profile whose `targets:` list covers each harness, so `sync` fans a change in any of them out to all the rest. Re-running `install --all` refreshes that profile instead of leaving it stale: newly detected harnesses are added, while targets already in it, any `sources:` you edited, and other profiles stay as they are. Harnesses that share one skill directory (Codex and Amp both use `~/.agents/skills`) are installed into once.
+
+Re-running `install` also keeps the profile pointed at the copy you just wrote: a different `--scope` or `--harness` moves the `auto-import` targets instead of leaving `sync` to refresh a stale global copy, and `--scope both` installs the global and project copies in one run and keeps both fresh. A config file that has no readable `auto-import` profile is never rewritten silently: `install` names it and suggests `--force`.
 
 Useful flags:
 
@@ -110,7 +112,7 @@ Safety rules that make automatic import safe to re-run:
 
 Skill Bridge writes each harness's documented first-choice location, re-checked against the current docs: [Cline](https://docs.cline.bot/customization/skills), [Devin Desktop](https://docs.devin.ai/desktop/devin-local/customizations), [Cursor](https://cursor.com/docs/skills), [Copilot](https://docs.github.com/en/copilot/concepts/agents/about-agent-skills), [Gemini CLI](https://geminicli.com/docs/cli/skills), [Codex](https://developers.openai.com/codex/build-skills), [Roo Code](https://docs.roocode.com/features/skills), [OpenCode](https://opencode.ai/docs/skills), [Amp](https://ampcode.com/docs/customize/skills), [Claude Code](https://code.claude.com/docs/en/skills), [OpenHands](https://docs.openhands.dev/overview/skills) and [Goose](https://goose-docs.ai/docs/guides/context-engineering/using-skills). Windsurf is now Devin Desktop, so both pairs work: `windsurf` keeps the legacy `.windsurf/skills` paths Cascade still reads, and `devin` writes the newer `.devin/skills` ones, while the shared `.agents/skills` folder stays the portable `codex`/`amp` target.
 
-Run `skill-bridge list-formats` for the same table with descriptions, and `skill-bridge detect` to see which of them exist on your machine.
+Run `skill-bridge list-formats` for the same table with descriptions, and `skill-bridge detect` to see which of them exist on your machine (`detect --scope project` or `--scope both` also covers project-local directories).
 
 Aliases are accepted anywhere a format is: `gemini-cli`, `github-copilot`, `open-code`, `continue-dev`, `goose-cli`, `claude`, `openai`, `agentskills`, `zed`, `kilo`, `warp`, and more.
 
@@ -184,7 +186,7 @@ skill-bridge reverse --from gemini --to windsurf \
 skill-bridge init [--source claude-code] [--target hermes] [--target codex]
 skill-bridge install [--harness <fmt> | --all] [--from <fmt>] [--scope global|project|both] [--dry-run] [--force]
 skill-bridge adopt --to <fmt> [--from <fmt>] [--scope ...] [--dry-run] [--force]
-skill-bridge detect                    # every harness + whether it is installed here
+skill-bridge detect [--scope global|project|both]   # every harness + whether it is installed here
 skill-bridge list-formats
 skill-bridge inspect <skill-dir>
 skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]

@@ -56,6 +56,49 @@ def test_sync_profile(tmp_path):
     assert (tgt / "demo-skill" / "SKILL.md").is_file()
 
 
+def test_sync_skill_matches_the_frontmatter_slug(tmp_path):
+    """A skill is named by its frontmatter, not by its folder."""
+    src = tmp_path / "source" / "My Fancy Skill"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text(
+        "---\nname: my-fancy-skill\ndescription: Folder and name differ here.\n---\n\n# Fancy\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target"
+
+    from skill_bridge.config import SkillLocation, SyncProfile
+
+    profile = SyncProfile(
+        name="test",
+        source=SkillLocation(format=AgentFormat.GENERIC, path=tmp_path / "source"),
+        targets=[SkillLocation(format=AgentFormat.HERMES, path=target)],
+    )
+
+    results = sync_profile(profile, skill_name="my-fancy-skill")
+
+    assert [r.skill_name for r in results] == ["my-fancy-skill"]
+    assert (target / "my-fancy-skill" / "SKILL.md").is_file()
+
+
+def test_sync_unknown_skill_lists_the_sources(tmp_path):
+    from skill_bridge.config import SkillLocation, SyncProfile
+
+    src = tmp_path / "source" / "demo"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill for sync tests.\n---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    profile = SyncProfile(
+        name="test",
+        source=SkillLocation(format=AgentFormat.GENERIC, path=tmp_path / "source"),
+        targets=[SkillLocation(format=AgentFormat.HERMES, path=tmp_path / "target")],
+    )
+
+    with pytest.raises(FileNotFoundError, match="not found"):
+        sync_profile(profile, skill_name="no-such-skill")
+
+
 def test_reverse_convert_custom_paths(tmp_path):
     src_root = tmp_path / "hermes" / "skills" / "my-skill"
     src_root.mkdir(parents=True)

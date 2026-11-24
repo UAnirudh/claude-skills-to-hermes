@@ -141,6 +141,7 @@ def auto_import_config(
     ``scope`` keeps the written profile pointed at the directory the import
     actually wrote to: ``install --scope project`` targets the project root, so
     ``sync`` and ``watch`` refresh that copy instead of a separate global one.
+    ``scope="both"`` covers the global and project copies of each target.
     """
     if isinstance(target, AgentFormat):
         wanted = [target]
@@ -157,29 +158,33 @@ def auto_import_config(
         raise ValueError("target_path only makes sense for a single target harness")
 
     resolved_scope = "project" if scope == "project" else "global"
+    # ``both`` writes and refreshes both copies; every other scope is one copy.
+    scopes = ["global", "project"] if scope == "both" else [resolved_scope]
     # Harnesses can share a directory (Codex and Amp both use .agents/skills);
     # writing one target per format would convert every skill twice.
     targets = _dedupe_locations(
         SkillLocation(
             format=fmt,
             path=resolve_skill_path(
-                fmt, scope=resolved_scope, project=project, override=target_path
+                fmt, scope=one_scope, project=project, override=target_path
             ),
-            scope="custom" if target_path else resolved_scope,
+            scope="custom" if target_path else one_scope,
         )
         for fmt in target_formats
+        for one_scope in scopes
     )
     sources: list[SkillLocation] = []
     for fmt in from_formats or []:
         if fmt in target_formats:
             continue
-        sources.append(
-            SkillLocation(
-                format=fmt,
-                path=resolve_skill_path(fmt, scope=resolved_scope, project=project),
-                scope=resolved_scope,
+        for one_scope in scopes:
+            sources.append(
+                SkillLocation(
+                    format=fmt,
+                    path=resolve_skill_path(fmt, scope=one_scope, project=project),
+                    scope=one_scope,
+                )
             )
-        )
 
     profile = SyncProfile(
         name="auto-import",
@@ -187,7 +192,7 @@ def auto_import_config(
         targets=targets,
         sources=sources,
         auto_sources=not sources,
-        source_scope=resolved_scope,
+        source_scope="both" if scope == "both" else resolved_scope,
         watch=True,
         validate=True,
     )

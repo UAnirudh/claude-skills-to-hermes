@@ -154,6 +154,79 @@ def test_several_harnesses_without_a_tty_asks_for_harness_or_all(home):
     assert not (Path.cwd() / "skill-bridge.yaml").exists()
 
 
+def test_project_scope_detects_project_harnesses(tmp_path, monkeypatch, home):
+    """The picker must offer project-local harnesses, not only global ones."""
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".claude" / "skills", "claude-skill")
+    write_skill(project / ".cursor" / "skills", "cursor-skill")
+    monkeypatch.setattr(cli, "_can_prompt", lambda: True)
+
+    # Sorted: claude-code is 1, cursor is 2.
+    result = CliRunner().invoke(main, ["install", "--scope", "project"], input="2\n")
+
+    assert result.exit_code == 0, result.output
+    assert (project / ".cursor" / "skills" / "claude-skill" / "SKILL.md").is_file()
+    profile = load_config(project / "skill-bridge.yaml").get_profile(None)
+    assert [t.path for t in profile.targets] == [project / ".cursor" / "skills"]
+
+
+def test_scope_both_installs_and_keeps_both_copies_fresh(tmp_path, monkeypatch, home):
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(global_skill_root(AgentFormat.CLAUDE_CODE), "global-skill")
+    write_skill(project / ".cursor" / "skills", "project-skill")
+
+    result = CliRunner().invoke(
+        main, ["install", "--harness", "hermes", "--scope", "both"]
+    )
+
+    assert result.exit_code == 0, result.output
+    profile = load_config(project / "skill-bridge.yaml").get_profile(None)
+    assert profile.source_scope == "both"
+    assert [t.path for t in profile.targets] == [
+        global_skill_root(AgentFormat.HERMES),
+        project / ".hermes" / "skills",
+    ]
+
+    # One sync fills both copies, from either scope.
+    run_sync(config_path=project / "skill-bridge.yaml")
+    for root in (global_skill_root(AgentFormat.HERMES), project / ".hermes" / "skills"):
+        for name in ("global-skill", "project-skill"):
+            assert (root / name / "SKILL.md").is_file(), (root, name)
+
+
+def test_unknown_harness_is_a_clean_error(home):
+    for args in (
+        ["install", "--harness", "nope"],
+        ["adopt", "--to", "nope"],
+        ["paths", "nope"],
+        ["convert", str(Path.cwd()), "--to", "nope"],
+        ["reverse", "--from", "nope", "--to", "hermes"],
+    ):
+        result = CliRunner().invoke(main, args)
+        assert result.exit_code == 2, (args, result.output)
+        assert "Unknown format 'nope'" in result.output
+        assert "Traceback" not in result.output
+
+
+def test_detect_shows_project_scope(tmp_path, monkeypatch, home):
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".gemini" / "skills", "project-skill")
+
+    global_only = CliRunner().invoke(main, ["detect"])
+    both = CliRunner().invoke(main, ["detect", "--scope", "both"])
+
+    assert global_only.exit_code == 0, global_only.output
+    assert "(project)" not in global_only.output
+    assert both.exit_code == 0, both.output
+    assert "(project)" in both.output
+
+
 def test_harness_and_all_together_are_rejected(home):
     result = CliRunner().invoke(main, ["install", "--harness", "hermes", "--all"])
 
