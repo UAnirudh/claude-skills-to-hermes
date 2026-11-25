@@ -37,10 +37,15 @@ from skill_bridge.sync import run_prune, run_sync
 
 STALE = "stale"
 OUT_OF_SYNC = "out-of-sync"
+EDITED = "edited"
 LOSSY = "lossy"
 
-#: Findings a command can fix, which is what `--strict` gates on.
-DRIFT_KINDS = (STALE, OUT_OF_SYNC)
+#: Findings a command can fix without guessing what the user meant.
+FIXABLE_KINDS = (STALE, OUT_OF_SYNC)
+#: Findings that mean the installed copies are not what the sources say, and
+#: so fail `--strict`. EDITED belongs here because it needs a human decision,
+#: not because a command should resolve it.
+DRIFT_KINDS = (STALE, OUT_OF_SYNC, EDITED)
 
 
 @dataclass(frozen=True)
@@ -66,8 +71,13 @@ class DoctorReport:
 
     @property
     def drift(self) -> list[Finding]:
-        """Findings that `sync` or `sync --prune` can fix."""
+        """Findings that mean a copy no longer follows its source."""
         return [finding for finding in self.findings if finding.kind in DRIFT_KINDS]
+
+    @property
+    def fixable(self) -> list[Finding]:
+        """Findings `doctor --fix` may repair without a judgement call."""
+        return [finding for finding in self.findings if finding.kind in FIXABLE_KINDS]
 
     @property
     def clean(self) -> bool:
@@ -103,27 +113,42 @@ def _describe_difference(expected: dict[str, bytes], actual: dict[str, bytes]) -
     return "; ".join(parts) or "content differs"
 
 
-def _difference(skill_dir: Path, source: Path, target: AgentFormat) -> str | None:
-    """Why ``skill_dir`` no longer matches its source, or None.
+def _difference(
+    skill_dir: Path, source: Path, target: AgentFormat
+) -> tuple[str, str] | None:
+    """Why ``skill_dir`` no longer matches its source, as (kind, detail).
 
     Markers written since fingerprints were added record the source as it was
-    when the copy was made and the copy as it was written, so two hashes answer
-    the question without converting anything. Older markers carry neither and
-    fall back to comparing against a fresh conversion.
+    when the copy was made and the copy as it was written. A copy that fails
+    its own fingerprint was edited in place, so it is reported as EDITED and
+    never refreshed: overwriting it would throw away whatever the user wrote.
+    A copy whose source fingerprint changed while its own still matches is
+    merely behind, and is the only thing `--fix` regenerates.
+
+    Older markers carry no fingerprints, so a difference there cannot be
+    attributed to either side; it is reported as EDITED for the same reason,
+    and an explicit `sync` is the user's call.
     """
     marker = read_marker(skill_dir)
     source_sha = marker.get("source-sha")
     output_sha = marker.get("output-sha")
     try:
-        if source_sha and tree_hash(source) != source_sha:
-            return "source changed since this copy was converted"
-        if output_sha and tree_hash(skill_dir) != output_sha:
-            return "copy changed since it was written"
+        copy_changed = bool(output_sha) and tree_hash(skill_dir) != output_sha
+        source_changed = bool(source_sha) and tree_hash(source) != source_sha
     except OSError:
-        return "copy cannot be read"
+        return EDITED, "copy cannot be read"
+    if copy_changed and source_changed:
+        return EDITED, "edited by hand and its source changed too"
+    if copy_changed:
+        return EDITED, "edited by hand since it was written"
+    if source_changed:
+        return OUT_OF_SYNC, "source changed since this copy was converted"
     if source_sha and output_sha:
         return None  # both fingerprints agree: nothing to re-convert
-    return _reconverted_difference(skill_dir, source, target)
+    difference = _reconverted_difference(skill_dir, source, target)
+    if difference is None:
+        return None
+    return EDITED, f"{difference}; no fingerprints to say which side changed"
 
 
 def _reconverted_difference(
@@ -184,14 +209,9 @@ def diagnose(locations: list[SkillLocation]) -> DoctorReport:
 
             difference = _difference(skill_dir, source, loc.format)
             if difference is not None:
+                kind, detail = difference
                 report.findings.append(
-                    Finding(
-                        OUT_OF_SYNC,
-                        skill_dir.name,
-                        loc.format,
-                        skill_dir,
-                        difference,
-                    )
+                    Finding(kind, skill_dir.name, loc.format, skill_dir, detail)
                 )
 
             try:
@@ -213,6 +233,7 @@ class RepairResult:
     pruned: int = 0
     refreshed: int = 0
     conversions: int = 0
+    edited: int = 0
     lossy: int = 0
 
     @property
@@ -228,26 +249,33 @@ def repair(
 ) -> RepairResult:
     """Apply the fixes ``report`` names, leaving lossy findings alone.
 
-    Stale copies go through ``run_prune`` and out-of-sync ones through
-    ``run_sync`` — the same guarded code paths the commands use, so a copy is
-    still only deleted when the marker proves it is ours. Each is skipped when
-    the report holds no finding of that kind, so a clean profile is never
-    rewritten. A lossy conversion cannot be repaired by writing files: the
-    target format has no field to hold the value, so those are counted and
-    left for the user.
+    Stale copies go through ``run_prune`` and behind ones through ``run_sync``
+    — the same guarded code paths the commands use, so a copy is still only
+    deleted when the marker proves it is ours.
+
+    Only copies the marker proves are behind are refreshed, and one skill at a
+    time: a profile-wide sync would also rewrite every hand-edited copy in the
+    target, which is exactly what this must not do. EDITED and LOSSY findings
+    are counted and left for the user.
     """
-    result = RepairResult(lossy=len(report.of_kind(LOSSY)))
+    result = RepairResult(
+        edited=len(report.of_kind(EDITED)), lossy=len(report.of_kind(LOSSY))
+    )
     if report.of_kind(STALE):
         outcome = run_prune(profile_name=profile_name, config_path=config_path)
         result.pruned = len(outcome.removed)
 
-    out_of_sync = report.of_kind(OUT_OF_SYNC)
-    if out_of_sync:
+    behind = report.of_kind(OUT_OF_SYNC)
+    for skill_name in sorted({finding.skill_name for finding in behind}):
         try:
-            conversions = run_sync(profile_name=profile_name, config_path=config_path)
+            conversions = run_sync(
+                profile_name=profile_name,
+                config_path=config_path,
+                skill_name=skill_name,
+            )
         except FileNotFoundError:
-            # Nothing left to import is not a repair failure.
-            conversions = []
-        result.conversions = len(conversions)
-        result.refreshed = len(out_of_sync)
+            # The skill vanished between the report and the repair.
+            continue
+        result.conversions += len(conversions)
+    result.refreshed = len(behind)
     return result

@@ -32,6 +32,7 @@ from skill_bridge.config import (
 )
 from skill_bridge.converter import convert_batch, convert_skill
 from skill_bridge.doctor import (
+    EDITED,
     LOSSY,
     OUT_OF_SYNC,
     STALE,
@@ -120,7 +121,8 @@ def _print_removals(
 
 DOCTOR_SECTIONS = (
     (STALE, "Source gone", "skill-bridge sync --prune removes these", "red"),
-    (OUT_OF_SYNC, "Out of sync", "skill-bridge sync refreshes these", "yellow"),
+    (OUT_OF_SYNC, "Out of sync", "--fix refreshes these from their source", "yellow"),
+    (EDITED, "Edited by hand", "--fix leaves these alone: sync would overwrite", "magenta"),
     (LOSSY, "Lossy fields", "kept in metadata.skill-bridge.extra", "cyan"),
 )
 
@@ -138,7 +140,8 @@ def _print_doctor(report: DoctorReport) -> None:
                 f"({finding.target_format.value}) [dim]{finding.detail}[/dim]"
             )
     stale = len(report.of_kind(STALE))
-    drift = len(report.of_kind(OUT_OF_SYNC))
+    behind = len(report.of_kind(OUT_OF_SYNC))
+    edited = len(report.of_kind(EDITED))
     lossy = len(report.of_kind(LOSSY))
     console.print()
     if report.clean:
@@ -148,7 +151,7 @@ def _print_doctor(report: DoctorReport) -> None:
         return
     console.print(
         f"[bold]Checked {report.checked} generated copy(ies):[/bold] "
-        f"{stale} stale, {drift} out of sync, {lossy} lossy"
+        f"{stale} stale, {behind} out of sync, {edited} edited, {lossy} lossy"
     )
 
 
@@ -159,6 +162,11 @@ def _print_repair(result: RepairResult, after: DoctorReport) -> None:
         console.print(
             f"[bold]Fixed[/bold] {result.pruned} stale, {result.refreshed} out of sync"
             f"[dim] ({result.conversions} conversion(s))[/dim]"
+        )
+    if result.edited:
+        console.print(
+            f"{WARN} Left {result.edited} hand-edited copy(ies) alone; "
+            "run sync to regenerate one deliberately."
         )
     if result.lossy:
         console.print(
@@ -725,8 +733,9 @@ def doctor_cmd(
     are reported but never fail --strict.
 
     --fix applies the two repairable findings (through the same guarded paths
-    as `sync --prune` and `sync`), then checks the profile again. Lossy
-    findings are left alone, because no conversion can restore a value the
+    as `sync --prune` and `sync`), then checks the profile again. Copies edited
+    after they were written are reported but never refreshed, and lossy
+    findings are left alone because no conversion can restore a value the
     target format has no field for.
     """
     load_exporters()

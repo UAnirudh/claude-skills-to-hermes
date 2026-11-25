@@ -193,9 +193,13 @@ target harness cannot express (parked in
 `doctor --strict` exits 1 for the first two — the drift a command can fix — so
 CI can gate on it; lossy fields are reported but never fail the gate.
 `doctor --fix` applies those two fixes for you (the same guarded paths as
-`sync --prune` and `sync`), re-checks the profile, and reports what is left;
-lossy findings stay, since no conversion can restore a field the target has no
-place for. `--fix --strict` therefore exits 0 once the drift is gone.
+`sync --prune` and `sync`), re-checks the profile, and reports what is left.
+A copy edited after it was written is never refreshed — the marker's
+fingerprints show the change is in the copy, not the source — so it is listed
+as `Edited by hand` and left for you; an explicit `sync` is the way to
+regenerate one. Lossy findings stay too, since no conversion can restore a
+field the target has no place for. `--fix --strict` exits 0 once nothing needs
+a decision.
 
 ## Reverse conversion
 

@@ -18,7 +18,7 @@ from click.testing import CliRunner
 from skill_bridge import doctor as doctor_module
 from skill_bridge.cli import main
 from skill_bridge.config import SkillLocation
-from skill_bridge.doctor import LOSSY, OUT_OF_SYNC, STALE, diagnose
+from skill_bridge.doctor import EDITED, LOSSY, OUT_OF_SYNC, STALE, diagnose
 from skill_bridge.models import AgentFormat
 from skill_bridge.provenance import tree_hash, write_marker
 from skill_bridge.sync import run_sync
@@ -210,8 +210,8 @@ def test_doctor_spots_a_hand_edited_copy_without_reconverting(tmp_path, monkeypa
 
     report = diagnose(hermes(target))
 
-    assert [finding.kind for finding in report.findings] == [OUT_OF_SYNC]
-    assert report.findings[0].detail == "copy changed since it was written"
+    assert [finding.kind for finding in report.findings] == [EDITED]
+    assert report.findings[0].detail == "edited by hand since it was written"
 
 
 def test_doctor_spots_an_edited_source_without_reconverting(tmp_path, monkeypatch):
@@ -250,8 +250,73 @@ def test_doctor_reconverts_a_marker_without_fingerprints(tmp_path):
 
     report = diagnose(hermes(target))
 
-    assert [finding.kind for finding in report.findings] == [OUT_OF_SYNC]
+    assert [finding.kind for finding in report.findings] == [EDITED]
     assert "SKILL.md" in report.findings[0].detail
+    assert "no fingerprints" in report.findings[0].detail
+
+
+def test_fix_refreshes_the_copy_behind_its_source_and_spares_the_edited_one(
+    tmp_path,
+):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "behind")
+    write_skill(source, "edited")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+
+    # `behind` falls behind its source; `edited` is only changed in the copy.
+    behind_source = source / "behind" / "SKILL.md"
+    behind_source.write_text(
+        behind_source.read_text(encoding="utf-8") + "\n## Added later\n",
+        encoding="utf-8",
+    )
+    edited_copy = target / "edited" / "SKILL.md"
+    edited_copy.write_text(
+        edited_copy.read_text(encoding="utf-8") + "\n<!-- hand written -->\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, ["doctor", "--config", str(config), "--fix"])
+
+    assert result.exit_code == 0, result.output
+    # The stale-behind copy is regenerated...
+    assert "## Added later" in (target / "behind" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    # ...and the hand-edited copy survives untouched.
+    assert "<!-- hand written -->" in edited_copy.read_text(encoding="utf-8")
+    assert "Edited by hand" in result.output
+    assert "Left 1 hand-edited" in result.output
+
+    # It still needs a decision, so the gate keeps failing until one is made.
+    strict = CliRunner().invoke(
+        main, ["doctor", "--config", str(config), "--strict"]
+    )
+    assert strict.exit_code == 1, strict.output
+
+
+def test_fix_never_overwrites_a_copy_that_is_both_edited_and_behind(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    skill = source / "demo" / "SKILL.md"
+    skill.write_text(
+        skill.read_text(encoding="utf-8") + "\n## Added later\n", encoding="utf-8"
+    )
+    copy = target / "demo" / "SKILL.md"
+    copy.write_text(
+        copy.read_text(encoding="utf-8") + "\n<!-- hand written -->\n",
+        encoding="utf-8",
+    )
+
+    report = diagnose(hermes(target))
+    result = CliRunner().invoke(main, ["doctor", "--config", str(config), "--fix"])
+
+    assert [finding.kind for finding in report.findings] == [EDITED]
+    assert "source changed too" in report.findings[0].detail
+    assert "<!-- hand written -->" in copy.read_text(encoding="utf-8")
+    assert "## Added later" not in copy.read_text(encoding="utf-8")
 
 
 def test_fix_prunes_stale_copies_and_refreshes_out_of_sync_ones(tmp_path):
