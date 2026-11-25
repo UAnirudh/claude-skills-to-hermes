@@ -9,6 +9,7 @@ from skill_bridge.agent_paths import detect_installed_agents, resolve_skill_path
 from skill_bridge.config import BridgeConfig, SkillLocation, SyncProfile, load_config
 from skill_bridge.converter import convert_skill, sweep_stale_holders
 from skill_bridge.formats.base import load_exporters
+from skill_bridge.locking import DEFAULT_LOCK_WAIT, exclusive_run, lock_path
 from skill_bridge.models import AgentFormat, ConversionResult
 from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.prune import (
@@ -205,10 +206,13 @@ def run_sync(
     config_path: Path | None = None,
     *,
     skill_name: str | None = None,
+    lock_wait: float = DEFAULT_LOCK_WAIT,
 ) -> list[ConversionResult]:
+    """Convert every source to every target, under the profile's run lock."""
     config: BridgeConfig = load_config(config_path)
     profile = config.get_profile(profile_name)
-    return sync_profile(profile, skill_name=skill_name)
+    with exclusive_run(lock_path(config.config_path), wait=lock_wait):
+        return sync_profile(profile, skill_name=skill_name)
 
 
 def run_prune(
@@ -218,15 +222,19 @@ def run_prune(
     skill_name: str | None = None,
     stale_only: bool = True,
     dry_run: bool = False,
+    lock_wait: float = DEFAULT_LOCK_WAIT,
 ) -> PruneOutcome:
     """Delete generated copies whose recorded source disappeared.
 
-    ``dry_run`` plans the same removals and reports them without writing.
+    ``dry_run`` plans the same removals and reports them without writing. Runs
+    under the profile's lock: what it deletes depends on what a concurrent sync
+    may be writing.
     """
     config: BridgeConfig = load_config(config_path)
     profile = config.get_profile(profile_name)
-    plan = plan_removals(
-        profile.targets, stale_only=stale_only, skill_name=skill_name
-    )
-    removed = [] if dry_run else apply_removals(plan.items)
+    with exclusive_run(lock_path(config.config_path), wait=lock_wait):
+        plan = plan_removals(
+            profile.targets, stale_only=stale_only, skill_name=skill_name
+        )
+        removed = [] if dry_run else apply_removals(plan.items)
     return PruneOutcome(plan=plan, removed=removed, dry_run=dry_run)

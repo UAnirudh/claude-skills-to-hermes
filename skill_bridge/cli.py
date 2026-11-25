@@ -33,6 +33,7 @@ from skill_bridge.config import (
     update_auto_import_config,
 )
 from skill_bridge.converter import convert_batch, convert_skill
+from skill_bridge.locking import DEFAULT_LOCK_WAIT, LockTimeout
 from skill_bridge.doctor import (
     EDITED,
     LOSSY,
@@ -217,7 +218,17 @@ def _print_adopt(report: AdoptReport, *, dry_run: bool = False) -> None:
         console.print("[dim]Dry run: nothing written. Re-run without --dry-run.[/dim]")
 
 
-@click.group()
+class _MainGroup(click.Group):
+    """Report a busy lock as a usage error, not as a traceback."""
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except LockTimeout as exc:
+            raise click.ClickException(str(exc)) from exc
+
+
+@click.group(cls=_MainGroup)
 @click.version_option(package_name="skill-bridge", prog_name="skill-bridge")
 def main() -> None:
     """Convert and sync agent skills across Claude Code, Hermes, Codex, Cursor, and every other harness."""
@@ -724,12 +735,20 @@ def uninstall_cmd(
 @click.option("--strict", is_flag=True, help="Exit 1 when a copy is stale or out of sync")
 @click.option("--fix", is_flag=True, help="Sync out-of-sync copies and prune stale ones")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output for CI")
+@click.option(
+    "--lock-timeout",
+    type=float,
+    default=DEFAULT_LOCK_WAIT,
+    show_default=True,
+    help="With --fix: seconds to wait for another run holding the profile lock",
+)
 def doctor_cmd(
     profile: str | None,
     config_path: Path | None,
     strict: bool,
     fix: bool,
     as_json: bool,
+    lock_timeout: float,
 ) -> None:
     """Report stale, out-of-sync and lossy copies in one pass.
 
@@ -773,7 +792,12 @@ def doctor_cmd(
     repair_result = None
     after = report
     if fix and report.drift:
-        repair_result = repair(report, profile_name=profile, config_path=config_path)
+        repair_result = repair(
+            report,
+            profile_name=profile,
+            config_path=config_path,
+            lock_wait=lock_timeout,
+        )
         after = diagnose(prof.targets)
 
     if as_json:
@@ -1070,12 +1094,20 @@ def reverse_cmd(
     is_flag=True,
     help="With --prune: report what would be removed, change nothing",
 )
+@click.option(
+    "--lock-timeout",
+    type=float,
+    default=DEFAULT_LOCK_WAIT,
+    show_default=True,
+    help="Seconds to wait for another run holding the profile lock",
+)
 def sync_cmd(
     profile: str | None,
     config: Path | None,
     skill_name: str | None,
     prune: bool,
     dry_run: bool,
+    lock_timeout: float,
 ) -> None:
     """Sync skills using skill-bridge.yaml profile (sources -> all targets)."""
     if dry_run and not prune:
@@ -1105,7 +1137,10 @@ def sync_cmd(
     else:
         try:
             results = run_sync(
-                profile_name=profile, config_path=config, skill_name=skill_name
+                profile_name=profile,
+                config_path=config,
+                skill_name=skill_name,
+                lock_wait=lock_timeout,
             )
         except FileNotFoundError as exc:
             if not prune:
@@ -1125,6 +1160,7 @@ def sync_cmd(
             config_path=config,
             skill_name=skill_name,
             dry_run=dry_run,
+            lock_wait=lock_timeout,
         )
     except KeyError as exc:
         message = str(exc.args[0]) if exc.args else str(exc)

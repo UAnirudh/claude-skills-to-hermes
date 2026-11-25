@@ -89,6 +89,7 @@ Safety rules that make automatic import safe to re-run:
 * a skill your harness authored itself is **never** overwritten without `--force`;
 * skills converted earlier are refreshed (not duplicated);
 * each conversion is staged in a temporary directory beside the skills folder and renamed into place, so an interrupted or concurrent sync can never leave a half-written skill behind, and staging folders a killed run left behind are swept by `sync` and `doctor` once they are a day old;
+* `sync`, `sync --prune` and `doctor --fix` take one lock per profile, so two runs serialize instead of interleaving: the second waits `--lock-timeout` seconds (10 by default) and then stops with the pid holding it. The lock is held by the operating system, so a run killed outright leaves nothing to clean up;
 * a copy whose source was deleted or renamed can be removed with `sync --prune` (or `uninstall`), and a skill your harness wrote itself is never deleted;
 * both the marker and the config say **where the source sits inside the tree**, not only on this machine, so a repository with generated copies can be cloned to another path or another operating system and still find its sources: doctor checks the copies instead of calling them stale, and `sync --prune` does not delete them;
 * when several harnesses store skills in the same folder (`.agents/skills` is shared by Codex, Cursor, Gemini CLI, Copilot, OpenCode, Cline, Amp, Zed, Kilo Code, Warp), the destination folder is never treated as a source;
@@ -259,8 +260,8 @@ skill-bridge inspect <skill-dir>
 skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
-skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]]
-skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json]
+skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]] [--lock-timeout S]
+skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json] [--lock-timeout S]
 skill-bridge annotate [--report FILE|-] [--profile NAME] [-c PATH]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]

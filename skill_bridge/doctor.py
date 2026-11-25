@@ -24,6 +24,7 @@ from pathlib import Path
 from skill_bridge.compat import lossy_fields
 from skill_bridge.config import SkillLocation
 from skill_bridge.converter import convert_skill, sweep_stale_holders
+from skill_bridge.locking import DEFAULT_LOCK_WAIT, exclusive_run, lock_path
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.provenance import (
@@ -306,6 +307,7 @@ def repair(
     *,
     profile_name: str | None = None,
     config_path: Path | None = None,
+    lock_wait: float = DEFAULT_LOCK_WAIT,
 ) -> RepairResult:
     """Apply the fixes ``report`` names, leaving lossy findings alone.
 
@@ -321,22 +323,25 @@ def repair(
     result = RepairResult(
         edited=len(report.of_kind(EDITED)), lossy=len(report.of_kind(LOSSY))
     )
-    if report.of_kind(STALE):
-        outcome = run_prune(profile_name=profile_name, config_path=config_path)
-        result.pruned = len(outcome.removed)
+    # One lock for the whole repair: the individual prune and syncs re-enter it
+    # rather than taking it again, so nobody sees a half-repaired profile.
+    with exclusive_run(lock_path(config_path), wait=lock_wait):
+        if report.of_kind(STALE):
+            outcome = run_prune(profile_name=profile_name, config_path=config_path)
+            result.pruned = len(outcome.removed)
 
-    behind = report.of_kind(OUT_OF_SYNC)
-    for skill_name in sorted({finding.skill_name for finding in behind}):
-        try:
-            conversions = run_sync(
-                profile_name=profile_name,
-                config_path=config_path,
-                skill_name=skill_name,
-            )
-        except FileNotFoundError:
-            # The skill vanished between the report and the repair.
-            continue
-        result.conversions += len(conversions)
+        behind = report.of_kind(OUT_OF_SYNC)
+        for skill_name in sorted({finding.skill_name for finding in behind}):
+            try:
+                conversions = run_sync(
+                    profile_name=profile_name,
+                    config_path=config_path,
+                    skill_name=skill_name,
+                )
+            except FileNotFoundError:
+                # The skill vanished between the report and the repair.
+                continue
+            result.conversions += len(conversions)
     result.refreshed = len(behind)
     return result
 

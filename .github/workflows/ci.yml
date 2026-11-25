@@ -198,6 +198,52 @@ jobs:
             exit 1
           }
 
+      # Two runs must not interleave: the second waits, then says why it stopped
+      # instead of writing anyway. This also exercises the Windows locking branch,
+      # which no unit test can reach on the other runners.
+      - name: Smoke test the run lock
+        shell: bash
+        run: |
+          work=".ci-lock"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the run lock smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          skill-bridge install --harness hermes --scope project --no-sync
+          cat > holder.py <<'PY'
+          import sys, time
+          from pathlib import Path
+          from skill_bridge.locking import exclusive_run
+
+          with exclusive_run(Path(sys.argv[1]), wait=0):
+              print("ready", flush=True)
+              time.sleep(20)
+          PY
+          python holder.py "$PWD/.skill-bridge.lock" > ready.txt &
+          holder=$!
+          for _ in $(seq 1 100); do
+            grep -q ready ready.txt 2>/dev/null && break
+            sleep 0.1
+          done
+          grep -q ready ready.txt || { echo "holder never took the lock"; exit 1; }
+          if skill-bridge sync --lock-timeout 0 > busy.txt 2>&1; then
+            echo "sync ran while another run held the lock"
+            cat busy.txt
+            exit 1
+          fi
+          grep -q "another skill-bridge run" busy.txt || {
+            echo "the busy lock was not explained"
+            cat busy.txt
+            exit 1
+          }
+          kill "$holder" 2>/dev/null || true
+          wait "$holder" 2>/dev/null || true
+          # With the lock free again the same command does its work.
+          skill-bridge sync --lock-timeout 5
+          test -f ".hermes/skills/demo/SKILL.md"
+          echo "run lock smoke test passed"
+
       # `annotate` is what a project's CI calls: prove it points at the line that
       # differs, that drift is an error, that a hand-edited copy is only a
       # warning, that a piped report gives the same answers as a live check, and
