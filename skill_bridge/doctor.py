@@ -28,6 +28,7 @@ from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.provenance import MARKER_FILENAME, is_bridge_generated
 from skill_bridge.prune import recorded_source, source_disappeared
+from skill_bridge.sync import run_prune, run_sync
 
 STALE = "stale"
 OUT_OF_SYNC = "out-of-sync"
@@ -173,3 +174,50 @@ def diagnose(locations: list[SkillLocation]) -> DoctorReport:
                     Finding(LOSSY, skill_dir.name, loc.format, skill_dir, ", ".join(lost))
                 )
     return report
+
+
+@dataclass
+class RepairResult:
+    """What `doctor --fix` changed, and what it deliberately did not."""
+
+    pruned: int = 0
+    refreshed: int = 0
+    conversions: int = 0
+    lossy: int = 0
+
+    @property
+    def touched(self) -> bool:
+        return bool(self.pruned or self.refreshed)
+
+
+def repair(
+    report: DoctorReport,
+    *,
+    profile_name: str | None = None,
+    config_path: Path | None = None,
+) -> RepairResult:
+    """Apply the fixes ``report`` names, leaving lossy findings alone.
+
+    Stale copies go through ``run_prune`` and out-of-sync ones through
+    ``run_sync`` — the same guarded code paths the commands use, so a copy is
+    still only deleted when the marker proves it is ours. Each is skipped when
+    the report holds no finding of that kind, so a clean profile is never
+    rewritten. A lossy conversion cannot be repaired by writing files: the
+    target format has no field to hold the value, so those are counted and
+    left for the user.
+    """
+    result = RepairResult(lossy=len(report.of_kind(LOSSY)))
+    if report.of_kind(STALE):
+        outcome = run_prune(profile_name=profile_name, config_path=config_path)
+        result.pruned = len(outcome.removed)
+
+    out_of_sync = report.of_kind(OUT_OF_SYNC)
+    if out_of_sync:
+        try:
+            conversions = run_sync(profile_name=profile_name, config_path=config_path)
+        except FileNotFoundError:
+            # Nothing left to import is not a repair failure.
+            conversions = []
+        result.conversions = len(conversions)
+        result.refreshed = len(out_of_sync)
+    return result

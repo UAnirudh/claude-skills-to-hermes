@@ -155,3 +155,67 @@ def test_doctor_ignores_hand_written_skills(tmp_path):
 
     assert report.checked == 0
     assert report.findings == []
+
+
+def test_fix_prunes_stale_copies_and_refreshes_out_of_sync_ones(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "keep")
+    gone = write_skill(source, "gone")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    assert (target / "gone" / "SKILL.md").is_file()
+
+    shutil.rmtree(gone)
+    keep = source / "keep" / "SKILL.md"
+    keep.write_text(
+        keep.read_text(encoding="utf-8") + "\n## Added later\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(
+        main, ["doctor", "--config", str(config), "--fix", "--strict"]
+    )
+
+    assert result.exit_code == 0, result.output
+    # The stale copy is gone, the live one caught up with its source.
+    assert not (target / "gone").exists()
+    assert "## Added later" in (target / "keep" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Fixed" in result.output
+    assert "No drift left" in result.output
+
+
+def test_fix_leaves_lossy_findings_alone(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    # Hermes has no `model` field: no conversion can put it back.
+    write_skill(source, "demo", frontmatter="model: opus\n")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    copy = target / "demo" / "SKILL.md"
+    before = copy.read_text(encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main, ["doctor", "--config", str(config), "--fix", "--strict"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert copy.read_text(encoding="utf-8") == before
+    assert "Lossy fields" in result.output
+
+
+def test_fix_rewrites_nothing_when_the_profile_is_healthy(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    copy = target / "demo" / "SKILL.md"
+    before = copy.read_text(encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main, ["doctor", "--config", str(config), "--fix", "--strict"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert copy.read_text(encoding="utf-8") == before
+    assert "nothing to fix" in result.output
+    assert "Fixed" not in result.output

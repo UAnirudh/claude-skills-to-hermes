@@ -36,7 +36,9 @@ from skill_bridge.doctor import (
     OUT_OF_SYNC,
     STALE,
     DoctorReport,
+    RepairResult,
     diagnose,
+    repair,
 )
 from skill_bridge.formats.base import all_exporters, get_exporter, load_exporters
 from skill_bridge.models import AgentFormat
@@ -148,6 +150,27 @@ def _print_doctor(report: DoctorReport) -> None:
         f"[bold]Checked {report.checked} generated copy(ies):[/bold] "
         f"{stale} stale, {drift} out of sync, {lossy} lossy"
     )
+
+
+def _print_repair(result: RepairResult, after: DoctorReport) -> None:
+    """Say what --fix changed, and whether the profile is drift-free now."""
+    console.print()
+    if result.touched:
+        console.print(
+            f"[bold]Fixed[/bold] {result.pruned} stale, {result.refreshed} out of sync"
+            f"[dim] ({result.conversions} conversion(s))[/dim]"
+        )
+    if result.lossy:
+        console.print(
+            f"[dim]Left {result.lossy} lossy finding(s) alone: "
+            "no conversion restores them.[/dim]"
+        )
+    if after.drift:
+        console.print(
+            f"{WARN} {len(after.drift)} drift finding(s) remain; run doctor to inspect."
+        )
+    else:
+        console.print(f"{OK} No drift left.")
 
 
 def _print_adopt(report: AdoptReport, *, dry_run: bool = False) -> None:
@@ -688,8 +711,11 @@ def uninstall_cmd(
 @click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
 @click.option("-c", "--config", "config_path", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--strict", is_flag=True, help="Exit 1 when a copy is stale or out of sync")
-def doctor_cmd(profile: str | None, config_path: Path | None, strict: bool) -> None:
-    """Report stale, out-of-sync and lossy copies in one read-only pass.
+@click.option("--fix", is_flag=True, help="Sync out-of-sync copies and prune stale ones")
+def doctor_cmd(
+    profile: str | None, config_path: Path | None, strict: bool, fix: bool
+) -> None:
+    """Report stale, out-of-sync and lossy copies in one pass.
 
     Stale copies are the ones `sync --prune` removes, and out-of-sync copies no
     longer match a fresh conversion of their source, which `sync` refreshes;
@@ -697,6 +723,11 @@ def doctor_cmd(profile: str | None, config_path: Path | None, strict: bool) -> N
     frontmatter a target cannot express, which conversion parks in
     metadata.skill-bridge.extra: they are inherent to the format pair, so they
     are reported but never fail --strict.
+
+    --fix applies the two repairable findings (through the same guarded paths
+    as `sync --prune` and `sync`), then checks the profile again. Lossy
+    findings are left alone, because no conversion can restore a value the
+    target format has no field for.
     """
     load_exporters()
     try:
@@ -719,6 +750,15 @@ def doctor_cmd(profile: str | None, config_path: Path | None, strict: bool) -> N
 
     report = diagnose(prof.targets)
     _print_doctor(report)
+
+    if fix and report.drift:
+        result = repair(report, profile_name=profile, config_path=config_path)
+        after = diagnose(prof.targets)
+        _print_repair(result, after)
+        if strict and after.drift:
+            raise SystemExit(1)
+        return
+
     if strict and report.drift:
         raise SystemExit(1)
 

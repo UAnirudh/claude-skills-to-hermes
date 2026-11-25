@@ -190,6 +190,10 @@ them), and frontmatter the target harness cannot express (parked in
 `metadata.skill-bridge.extra`, so nothing can restore it in place).
 `doctor --strict` exits 1 for the first two — the drift a command can fix — so
 CI can gate on it; lossy fields are reported but never fail the gate.
+`doctor --fix` applies those two fixes for you (the same guarded paths as
+`sync --prune` and `sync`), re-checks the profile, and reports what is left;
+lossy findings stay, since no conversion can restore a field the target has no
+place for. `--fix --strict` therefore exits 0 once the drift is gone.
 
 ## Reverse conversion
 
@@ -223,7 +227,7 @@ skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]]
-skill-bridge doctor [--profile NAME] [-c PATH] [--strict]
+skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]
 skill-bridge batch <root> --all-agents | --to <format>
