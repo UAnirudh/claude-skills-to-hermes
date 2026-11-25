@@ -38,6 +38,21 @@ jobs:
       - name: Check README harness table matches the exporters
         run: pytest -q tests/test_readme.py
 
+      # Drift in the checkout shows up on the copy it belongs to rather than
+      # only failing the job. No profile is committed in this repo, so a normal
+      # run announces that; a project that checks in a profile gets one
+      # annotation per finding. Only the copies' own SKILL.md is annotated.
+      - name: Annotate drift
+        shell: bash
+        run: |
+          if [ ! -f skill-bridge.yaml ]; then
+            echo "::notice::no skill-bridge.yaml in the repository root to check"
+            exit 0
+          fi
+          report="${RUNNER_TEMP:-.}/doctor.json"
+          skill-bridge doctor --json > "$report"
+          python .github/scripts/annotate_doctor.py < "$report"
+
       - name: Smoke test CLI
         shell: bash
         run: |
@@ -182,6 +197,56 @@ jobs:
             echo "sync --config recreated an uninstalled copy"
             exit 1
           }
+
+      # The annotator is the piece a project's CI calls: prove it turns the
+      # report into the annotations, that drift is an error, that a hand-edited
+      # copy is only a warning, and that a clean profile emits nothing.
+      - name: Smoke test doctor annotations
+        shell: bash
+        run: |
+          work=".ci-annotate"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the annotation smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          script="../.github/scripts/annotate_doctor.py"
+          skill-bridge install --harness hermes --scope project
+          # A copy behind its source is drift a command can fix, so it is an
+          # error aimed at that copy's SKILL.md and nothing else.
+          printf -- '\n## Later\n' >> ".claude/skills/demo/SKILL.md"
+          skill-bridge doctor --json > report.json
+          python "$script" < report.json > annotations.txt
+          grep -q '^::error file=.*[\\/][.]hermes[\\/]skills[\\/]demo[\\/]SKILL[.]md,line=1::demo (hermes): source changed since this copy was converted$' \
+            annotations.txt
+          test "$(grep -c '^::' annotations.txt)" -eq 1 || {
+            echo "expected exactly one out-of-sync annotation"
+            cat annotations.txt
+            exit 1
+          }
+          # A copy edited by hand must never be overwritten by --fix, so it
+          # warns rather than failing the annotation contract.
+          skill-bridge sync
+          printf -- '\n<!-- hand written -->\n' >> ".hermes/skills/demo/SKILL.md"
+          skill-bridge doctor --json > report.json
+          python "$script" < report.json > annotations.txt
+          grep -q '^::warning file=.*[\\/][.]hermes[\\/]skills[\\/]demo[\\/]SKILL[.]md,line=1::demo (hermes): edited by hand since it was written$' \
+            annotations.txt
+          test "$(grep -c '^::' annotations.txt)" -eq 1 || {
+            echo "expected exactly one edited annotation"
+            cat annotations.txt
+            exit 1
+          }
+          # Nothing to report means no annotations at all, not a bare summary.
+          skill-bridge sync
+          skill-bridge doctor --json > report.json
+          python "$script" < report.json > annotations.txt
+          test ! -s annotations.txt || {
+            echo "a clean profile produced annotations"
+            cat annotations.txt
+            exit 1
+          }
+          echo "annotations smoke test passed"
 
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.

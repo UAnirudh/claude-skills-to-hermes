@@ -205,7 +205,9 @@ a decision.
 text — `profile`, `checked`, `clean`, `drift`, per-kind `counts`, and a
 `findings` list where each entry carries the `SKILL.md` to annotate — so CI can
 read it without parsing the human output. `--strict` keeps its exit code
-either way.
+either way. `.github/scripts/annotate_doctor.py` does exactly that: it reads the
+document on stdin and prints one GitHub annotation per finding, an error for
+drift a command can fix and a warning for a copy that needs a decision.
 
 ## Reverse conversion
 
