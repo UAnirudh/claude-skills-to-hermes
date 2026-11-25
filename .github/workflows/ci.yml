@@ -138,6 +138,37 @@ jobs:
           test ! -d ".hermes/skills/keep" || { echo "uninstall kept a generated copy"; exit 1; }
           test -f ".hermes/skills/handwritten/SKILL.md"
           grep -q "Removed 1 skill" uninstall.txt
+          # uninstall also forgets the target it emptied, so the sync that used
+          # to resurrect every copy must now have nothing to do.
+          if skill-bridge sync > sync-after-uninstall.txt 2>&1; then
+            echo "sync succeeded after uninstall"
+            exit 1
+          fi
+          test ! -d ".hermes/skills/keep" || {
+            echo "sync recreated an uninstalled copy"
+            exit 1
+          }
+          # A profile kept outside the default locations is forgotten when it is
+          # named with --config, so an explicit sync cannot resurrect it either.
+          mkdir -p "custom/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the custom-config prune smoke test.\n---\n\n# Demo\n' \
+            > "custom/.claude/skills/demo/SKILL.md"
+          cd custom
+          skill-bridge install --harness hermes --scope project --config bridge.yaml
+          test -f "bridge.yaml"
+          test -f ".hermes/skills/demo/SKILL.md"
+          skill-bridge uninstall --harness hermes --scope project --config bridge.yaml \
+            > uninstall-custom.txt
+          test ! -d ".hermes/skills/demo" || { echo "custom uninstall kept a copy"; exit 1; }
+          test ! -f "bridge.yaml" || { echo "custom profile survived uninstall"; exit 1; }
+          if skill-bridge sync --config bridge.yaml 2>/dev/null; then
+            echo "sync --config succeeded after uninstall"
+            exit 1
+          fi
+          test ! -d ".hermes/skills/demo" || {
+            echo "sync --config recreated an uninstalled copy"
+            exit 1
+          }
 
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.

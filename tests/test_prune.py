@@ -429,3 +429,87 @@ def test_stale_only_uninstall_leaves_the_profile_alone(tmp_path):
     # That harness is still a target, so sync must keep refreshing it.
     after = load_config(config, project=tmp_path)
     assert [t.path for t in after.profiles["test"].targets] == [target]
+
+
+def test_uninstall_forgets_a_profile_stored_outside_the_default_locations(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".claude" / "skills", "demo")
+    # Deliberately somewhere load_config would never look.
+    elsewhere = tmp_path / "conf" / "bridge.yaml"
+    elsewhere.parent.mkdir()
+
+    runner = CliRunner()
+    installed = runner.invoke(
+        main,
+        [
+            "install",
+            "--harness",
+            "hermes",
+            "--scope",
+            "project",
+            "--config",
+            str(elsewhere),
+        ],
+    )
+    assert installed.exit_code == 0, installed.output
+    copy = project / ".hermes" / "skills" / "demo"
+    assert (copy / "SKILL.md").is_file()
+    assert elsewhere.is_file()
+
+    result = runner.invoke(
+        main,
+        [
+            "uninstall",
+            "--harness",
+            "hermes",
+            "--scope",
+            "project",
+            "--config",
+            str(elsewhere),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not copy.exists()
+    assert not elsewhere.exists()
+
+    # The explicit sync still cannot bring the copies back.
+    synced = runner.invoke(main, ["sync", "--config", str(elsewhere)])
+    assert synced.exit_code != 0, synced.output
+    assert not copy.exists()
+
+
+def test_uninstall_leaves_a_config_it_was_not_pointed_at(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".claude" / "skills", "demo")
+    elsewhere = tmp_path / "conf" / "bridge.yaml"
+    elsewhere.parent.mkdir()
+    runner = CliRunner()
+    runner.invoke(
+        main,
+        [
+            "install",
+            "--harness",
+            "hermes",
+            "--scope",
+            "project",
+            "--config",
+            str(elsewhere),
+        ],
+    )
+
+    # Without --config the uninstall only knows the defaults, which hold no
+    # profile for this project: the copies go, the external file is untouched.
+    result = runner.invoke(
+        main, ["uninstall", "--harness", "hermes", "--scope", "project"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (project / ".hermes" / "skills" / "demo").exists()
+    assert elsewhere.is_file()

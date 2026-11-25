@@ -540,6 +540,14 @@ def install_cmd(
     help="Override the target skills directory",
 )
 @click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Config to update (default: the one sync would read)",
+)
+@click.option(
     "--stale-only",
     is_flag=True,
     help="Only copies whose source was deleted or renamed",
@@ -550,6 +558,7 @@ def uninstall_cmd(
     all_harnesses: bool,
     scope: str,
     to_path: Path | None,
+    config_path: Path | None,
     stale_only: bool,
     dry_run: bool,
 ) -> None:
@@ -621,7 +630,8 @@ def uninstall_cmd(
     if removed and not stale_only:
         emptied = {os.path.realpath(item.target_root) for item in removed}
         forgotten = forget_targets(
-            [loc for loc in locations if os.path.realpath(loc.path) in emptied]
+            [loc for loc in locations if os.path.realpath(loc.path) in emptied],
+            config=config_path,
         )
         for path in forgotten.deleted:
             console.print(

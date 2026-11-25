@@ -177,8 +177,10 @@ itself has no marker, so it is never a candidate for either command.
 
 An uninstall also drops the target it emptied from `skill-bridge.yaml`, and
 deletes the file once no profile is left, so the next `sync` cannot recreate
-what you just removed. `--stale-only` leaves the profile alone: that harness
-is still meant to receive skills.
+what you just removed. Pass `--config PATH` when the profile lives somewhere
+`sync` would not find on its own, and that file is updated instead.
+`--stale-only` leaves the profile alone: that harness is still meant to
+receive skills.
 
 ## Reverse conversion
 
@@ -212,7 +214,7 @@ skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]]
-skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--stale-only] [--dry-run]
+skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]
 skill-bridge batch <root> --all-agents | --to <format>
 skill-bridge paths <format> [--scope global|project|both]

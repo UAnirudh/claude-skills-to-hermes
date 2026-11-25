@@ -327,6 +327,7 @@ class ForgottenTargets:
 def forget_targets(
     locations: Iterable[SkillLocation],
     *,
+    config: Path | None = None,
     project: Path | None = None,
 ) -> ForgottenTargets:
     """Drop profile targets that point at skill folders being uninstalled.
@@ -340,6 +341,9 @@ def forget_targets(
     profile aimed at another, and a user's own profiles are only touched when
     they point at the removed directory too. A profile left without any target
     is dropped; a config file left without any profile is deleted.
+
+    ``config`` names one file explicitly, for a profile kept outside the
+    directories ``load_config`` searches; only that file is considered then.
     """
     project = project or Path.cwd()
     gone = {os.path.realpath(loc.path) for loc in locations}
@@ -348,7 +352,8 @@ def forget_targets(
         return result
 
     seen: set[str] = set()
-    for path in _config_candidates(project):
+    candidates = [config] if config else _config_candidates(project)
+    for path in candidates:
         key = os.path.realpath(path)
         if key in seen or not path.is_file():
             continue
