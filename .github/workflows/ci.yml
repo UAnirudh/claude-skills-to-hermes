@@ -117,7 +117,15 @@ jobs:
           skill-bridge install --harness hermes --scope project
           test -f ".hermes/skills/gone/SKILL.md"
           test -f ".hermes/skills/keep/SKILL.md"
+          # doctor is read-only and passes while every copy matches its source.
+          skill-bridge doctor --strict
           rm -rf ".claude/skills/gone"
+          # A deleted source is drift: the gate must fail and name the copy.
+          if skill-bridge doctor --strict > doctor-drift.txt 2>&1; then
+            echo "doctor --strict passed with a stale copy"
+            exit 1
+          fi
+          grep -q "Source gone" doctor-drift.txt
           # The dry run names the orphan and must leave it on disk.
           skill-bridge sync --prune --dry-run > dry-run.txt
           test -d ".hermes/skills/gone" || { echo "dry run removed a skill"; exit 1; }
@@ -125,6 +133,8 @@ jobs:
           skill-bridge sync --prune > prune.txt
           test ! -d ".hermes/skills/gone" || { echo "orphan survived prune"; exit 1; }
           grep -q "Pruned 1 skill" prune.txt
+          # With the orphan gone the same gate passes again.
+          skill-bridge doctor --strict
           # A copy whose source still exists, and the hand-written skill, stay.
           test -f ".hermes/skills/keep/SKILL.md"
           test -f ".hermes/skills/handwritten/SKILL.md"
