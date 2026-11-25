@@ -204,8 +204,11 @@ CI can gate on it; lossy fields are reported but never fail the gate.
 `sync --prune` and `sync`), re-checks the profile, and reports what is left.
 A copy edited after it was written is never refreshed — the marker's
 fingerprints show the change is in the copy, not the source — so it is listed
-as `Edited by hand` and left for you; an explicit `sync` is the way to
-regenerate one. Lossy findings stay too, since no conversion can restore a
+as `Edited by hand` and left for you. An explicit `sync` regenerates one, and
+`skill-bridge accept` is the other answer: if the edit is what you want, it
+rewrites the marker's fingerprints to the copy and its source as they are now,
+so the warning stops and a later source change is reported as a decision instead
+of being refreshed over your text (`--skill NAME` limits it to one copy). Lossy findings stay too, since no conversion can restore a
 field the target has no place for. `--fix --strict` exits 0 once nothing needs
 a decision.
 `doctor --json` writes the same report as a document instead of coloured
@@ -262,6 +265,7 @@ skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]] [--lock-timeout S]
 skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json] [--lock-timeout S]
+skill-bridge accept [--profile NAME] [-c PATH] [--skill NAME] [--lock-timeout S]
 skill-bridge annotate [--report FILE|-] [--profile NAME] [-c PATH]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]

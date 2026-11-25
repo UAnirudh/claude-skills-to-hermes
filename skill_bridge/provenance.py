@@ -175,6 +175,33 @@ def write_marker(
         data["source-sha"] = source_hash
     if output_hash is not None:
         data["output-sha"] = output_hash
+    return _dump_marker(skill_dir, data)
+
+
+def _dump_marker(skill_dir: Path, data: dict[str, Any]) -> Path:
     path = marker_path(skill_dir)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def bless_marker(skill_dir: Path, *, source: Path | None = None) -> Path:
+    """Take this copy's current contents as the baseline for drift checks.
+
+    ``accept`` calls this once the user has decided their hand edit is what they
+    want: the copy and (when it can be read) its source are fingerprinted as
+    they are now, which clears the warning, and ``local-changes`` records the
+    decision so a later source change is reported as an edit rather than being
+    refreshed over the top of it.
+    """
+    if not is_bridge_generated(skill_dir):
+        return marker_path(skill_dir)
+    data = read_marker(skill_dir)
+    data["output-sha"] = tree_hash(skill_dir)
+    if source is not None and Path(source).is_dir():
+        try:
+            data["source-sha"] = tree_hash(source)
+        except OSError:
+            pass  # the copy can still be blessed; the source is just unreadable
+    data["accepted-at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    data["local-changes"] = True
+    return _dump_marker(skill_dir, data)

@@ -198,6 +198,39 @@ jobs:
             exit 1
           }
 
+      # A hand edit has two answers: `sync` throws it away, `accept` keeps it.
+      # This checks accept keeps the text, silences the warning, and does not
+      # turn a later source change into a silent overwrite.
+      - name: Smoke test accept
+        shell: bash
+        run: |
+          work=".ci-accept"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the accept smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          skill-bridge install --harness hermes --scope project
+          printf -- '\n## Written by hand\n' >> ".hermes/skills/demo/SKILL.md"
+          if skill-bridge doctor --strict > before.txt 2>&1; then
+            echo "doctor passed a hand-edited copy"
+            exit 1
+          fi
+          grep -q "Edited by hand" before.txt
+          skill-bridge accept > accept.txt
+          grep -q "Accepted 1 copy" accept.txt
+          skill-bridge doctor --strict
+          grep -q "Written by hand" ".hermes/skills/demo/SKILL.md"
+          # Editing the source again is a decision, not a silent overwrite.
+          printf -- '\n## Added later\n' >> ".claude/skills/demo/SKILL.md"
+          if skill-bridge doctor --fix --strict > after.txt 2>&1; then
+            echo "doctor --fix resolved an accepted copy"
+            exit 1
+          fi
+          grep -q "accepted copy" after.txt
+          grep -q "Written by hand" ".hermes/skills/demo/SKILL.md"
+          echo "accept smoke test passed"
+
       # Two runs must not interleave: the second waits, then says why it stopped
       # instead of writing anyway. This also exercises the Windows locking branch,
       # which no unit test can reach on the other runners.

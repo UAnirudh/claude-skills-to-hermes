@@ -29,6 +29,7 @@ from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.provenance import (
     MARKER_FILENAME,
+    bless_marker,
     is_bridge_generated,
     read_marker,
     tree_hash,
@@ -206,6 +207,10 @@ def _difference(
         return EDITED, "edited by hand and its source changed too", differences
     if copy_changed:
         return EDITED, "edited by hand since it was written", differences
+    if marker.get("local-changes"):
+        # An accepted copy is the user's baseline now: a later source change is
+        # reported for a decision, never refreshed over the hand-written text.
+        return EDITED, "accepted copy, and its source changed since", differences
     return OUT_OF_SYNC, "source changed since this copy was converted", differences
 
 
@@ -343,6 +348,43 @@ def repair(
                 continue
             result.conversions += len(conversions)
     result.refreshed = len(behind)
+    return result
+
+
+@dataclass
+class AcceptResult:
+    """Copies whose marker was rewritten to bless their current contents."""
+
+    accepted: list[Finding] = field(default_factory=list)
+
+
+def accept_edits(
+    report: DoctorReport,
+    *,
+    profile_name: str | None = None,
+    config_path: Path | None = None,
+    skill_name: str | None = None,
+    lock_wait: float = DEFAULT_LOCK_WAIT,
+) -> AcceptResult:
+    """Bless every hand-edited copy ``report`` names, keeping the edit.
+
+    Only EDITED findings are candidates: a stale copy has no source left to
+    bless against, and a lossy one is a property of the format pair rather than
+    something a decision can settle. Runs under the profile lock because it
+    rewrites markers a concurrent sync may be reading.
+    """
+    result = AcceptResult()
+    candidates = [
+        finding
+        for finding in report.of_kind(EDITED)
+        if skill_name is None or finding.skill_name == skill_name
+    ]
+    if not candidates:
+        return result
+    with exclusive_run(lock_path(config_path), wait=lock_wait):
+        for finding in candidates:
+            bless_marker(finding.skill_dir, source=recorded_source(finding.skill_dir))
+            result.accepted.append(finding)
     return result
 
 

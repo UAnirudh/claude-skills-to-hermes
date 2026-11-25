@@ -41,6 +41,7 @@ from skill_bridge.doctor import (
     STALE,
     DoctorReport,
     RepairResult,
+    accept_edits,
     diagnose,
     repair,
     report_to_dict,
@@ -815,6 +816,70 @@ def doctor_cmd(
 
     if strict and after.drift:
         raise SystemExit(1)
+
+
+@main.command("accept")
+@click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+)
+@click.option("--skill", "skill_name", default=None, help="Accept only this skill")
+@click.option(
+    "--lock-timeout",
+    type=float,
+    default=DEFAULT_LOCK_WAIT,
+    show_default=True,
+    help="Seconds to wait for another run holding the profile lock",
+)
+def accept_cmd(
+    profile: str | None,
+    config_path: Path | None,
+    skill_name: str | None,
+    lock_timeout: float,
+) -> None:
+    """Bless hand-edited copies so doctor stops reporting them as drift.
+
+    `doctor` never overwrites a copy whose contents no longer match what it
+    wrote, because that would throw away work. This is the other answer: keep
+    the edit and make it the baseline. The marker's fingerprints are rewritten
+    to what the copy and its source are now, and the copy is recorded as
+    carrying local changes, so a later source edit is reported for a decision
+    instead of being refreshed over the top of yours.
+    """
+    load_exporters()
+    try:
+        config = load_config(config_path)
+        prof = config.get_profile(profile)
+    except KeyError as exc:
+        message = str(exc.args[0]) if exc.args else str(exc)
+        console.print(f"[red]{message}[/red]")
+        raise SystemExit(1) from exc
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1) from exc
+
+    report = diagnose(prof.targets)
+    result = accept_edits(
+        report,
+        profile_name=profile,
+        config_path=config_path,
+        skill_name=skill_name,
+        lock_wait=lock_timeout,
+    )
+    if not result.accepted:
+        console.print("Nothing to accept.")
+        return
+
+    for finding in result.accepted:
+        console.print(
+            f"{OK} accepted {finding.skill_name} "
+            f"({finding.target_format.value}): {finding.skill_dir}"
+        )
+    console.print(f"\n[bold]Accepted {len(result.accepted)} copy(ies)[/bold]")
 
 
 @main.command("annotate")
