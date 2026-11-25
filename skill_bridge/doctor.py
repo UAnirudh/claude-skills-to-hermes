@@ -23,7 +23,7 @@ from pathlib import Path
 
 from skill_bridge.compat import lossy_fields
 from skill_bridge.config import SkillLocation
-from skill_bridge.converter import convert_skill
+from skill_bridge.converter import convert_skill, sweep_stale_holders
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.provenance import (
@@ -172,13 +172,18 @@ def _reconverted_difference(
 
 
 def diagnose(locations: list[SkillLocation]) -> DoctorReport:
-    """Check every generated copy under ``locations``, without writing anything."""
+    """Check every generated copy under ``locations``.
+
+    The copies themselves are never written to; the one thing this removes is
+    a staging holder a killed conversion left behind days ago.
+    """
     report = DoctorReport()
     seen_roots: set[str] = set()
     seen_dirs: set[str] = set()
 
     for loc in locations:
         root = Path(loc.path)
+        sweep_stale_holders(root)
         if not root.is_dir():
             continue
         # Codex and Amp share ~/.agents/skills: check each real folder once.

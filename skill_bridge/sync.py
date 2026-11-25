@@ -7,7 +7,7 @@ from pathlib import Path
 
 from skill_bridge.agent_paths import detect_installed_agents, resolve_skill_path
 from skill_bridge.config import BridgeConfig, SkillLocation, SyncProfile, load_config
-from skill_bridge.converter import convert_skill
+from skill_bridge.converter import convert_skill, sweep_stale_holders
 from skill_bridge.formats.base import load_exporters
 from skill_bridge.models import AgentFormat, ConversionResult
 from skill_bridge.parser import find_skills, load_skill
@@ -162,6 +162,10 @@ def sync_profile(
     skill_name: str | None = None,
 ) -> list[ConversionResult]:
     """Convert source skills (one or many harnesses) to all targets in a profile."""
+    # A run killed outright cannot clean up the directory it was staging in.
+    for target in profile.targets:
+        sweep_stale_holders(target.path)
+
     sources = profile_sources(profile)
     if not sources:
         raise FileNotFoundError(

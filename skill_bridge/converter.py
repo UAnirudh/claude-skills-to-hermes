@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from skill_bridge.formats.base import get_exporter, load_exporters
@@ -19,6 +20,44 @@ def default_output_root(fmt: AgentFormat, base: Path | None = None) -> Path:
     exporter = get_exporter(fmt)
     root = base or Path.cwd()
     return root / exporter.default_output_subdir
+
+
+#: Prefix of the directory a conversion stages in before renaming it into place.
+STAGING_PREFIX = ".skill-bridge-tmp-"
+#: How long a staging holder may linger before it is surely a crashed run's.
+STAGING_MAX_AGE = 24 * 60 * 60
+
+
+def sweep_stale_holders(
+    skills_root: Path,
+    *,
+    max_age: float = STAGING_MAX_AGE,
+    now: float | None = None,
+) -> list[Path]:
+    """Delete staging holders a killed run left beside ``skills_root``.
+
+    A conversion stages in a sibling of the skills directory and renames the
+    result into place, so a process killed outright never gets to clean up.
+    Only directories carrying the staging prefix are considered, never
+    symlinks, and only once they are older than ``max_age``: a fresh holder may
+    belong to a sync still running.
+    """
+    parent = Path(skills_root).expanduser().parent
+    if not parent.is_dir():
+        return []
+    cutoff = (time.time() if now is None else now) - max_age
+    removed: list[Path] = []
+    for entry in sorted(parent.glob(f"{STAGING_PREFIX}*")):
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            if entry.stat().st_mtime > cutoff:
+                continue
+            shutil.rmtree(entry)
+        except OSError:
+            continue  # in use, or not ours to remove
+        removed.append(entry)
+    return removed
 
 
 def _swap_into_place(staged: Path, dest: Path, *, holder: Path) -> None:
@@ -67,7 +106,7 @@ def convert_skill(
     # atomic, but outside the directories sync and doctor scan, so an
     # interrupted run cannot leave a half-written skill looking like a real
     # one. The marker is written while staged, so it arrives with the copy.
-    holder = Path(tempfile.mkdtemp(prefix=".skill-bridge-tmp-", dir=out.parent))
+    holder = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=out.parent))
     try:
         result = exporter.export(bundle, holder)
         write_marker(

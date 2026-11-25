@@ -8,13 +8,18 @@ and renamed into place.
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
 
 from skill_bridge import converter
-from skill_bridge.converter import convert_skill
+from skill_bridge.config import SkillLocation, SyncProfile
+from skill_bridge.converter import convert_skill, sweep_stale_holders
+from skill_bridge.doctor import diagnose
 from skill_bridge.models import AgentFormat, ConversionResult
+from skill_bridge.sync import sync_profile
 
 
 def write_skill(root: Path, name: str = "demo", body: str = "# Demo\n") -> Path:
@@ -89,6 +94,82 @@ def test_a_failing_export_keeps_the_previous_copy_intact(tmp_path, monkeypatch):
     # The old copy is still whole, and no staging directory survived.
     assert (out / "demo" / "SKILL.md").read_text(encoding="utf-8") == before
     assert leftovers(out) == []
+
+
+def age(path: Path, days: float) -> None:
+    stamp = time.time() - days * 24 * 60 * 60
+    os.utime(path, (stamp, stamp))
+
+
+def test_the_sweep_removes_only_old_staging_holders(tmp_path):
+    out = tmp_path / "tgt"
+    out.mkdir()
+    old = tmp_path / ".skill-bridge-tmp-old"
+    fresh = tmp_path / ".skill-bridge-tmp-fresh"
+    unrelated = tmp_path / "keep-me"
+    for directory in (old, fresh, unrelated):
+        directory.mkdir()
+        (directory / "SKILL.md").write_text("staged", encoding="utf-8")
+    age(old, 2)
+
+    removed = sweep_stale_holders(out)
+
+    assert removed == [old]
+    assert not old.exists()
+    # A fresh holder may belong to a sync that is still running.
+    assert (fresh / "SKILL.md").is_file()
+    assert unrelated.is_dir()
+
+
+def test_the_sweep_never_follows_a_symlinked_holder(tmp_path):
+    out = tmp_path / "tgt"
+    out.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    link = tmp_path / ".skill-bridge-tmp-link"
+    try:
+        link.symlink_to(elsewhere)
+    except OSError:  # pragma: no cover - Windows without symlink rights
+        pytest.skip("symlinks unavailable on this platform")
+    age(elsewhere, 3)
+
+    assert sweep_stale_holders(out) == []
+
+    assert link.is_symlink()
+    assert elsewhere.is_dir()
+
+
+def test_sync_sweeps_a_holder_left_by_a_killed_run(tmp_path):
+    source = tmp_path / "src"
+    write_skill(source)
+    target = tmp_path / "tgt"
+    crashed = tmp_path / ".skill-bridge-tmp-crashed"
+    crashed.mkdir()
+    (crashed / "demo").mkdir()
+    age(crashed, 2)
+    profile = SyncProfile(
+        name="test",
+        source=SkillLocation(format=AgentFormat.GENERIC, path=source),
+        targets=[SkillLocation(format=AgentFormat.HERMES, path=target)],
+    )
+
+    results = sync_profile(profile)
+
+    assert [result.skill_name for result in results] == ["demo"]
+    assert not crashed.exists()
+    assert (target / "demo" / "SKILL.md").is_file()
+
+
+def test_doctor_sweeps_a_holder_left_by_a_killed_run(tmp_path):
+    target = tmp_path / "tgt"
+    target.mkdir()
+    crashed = tmp_path / ".skill-bridge-tmp-crashed"
+    crashed.mkdir()
+    age(crashed, 2)
+
+    diagnose([SkillLocation(format=AgentFormat.HERMES, path=target)])
+
+    assert not crashed.exists()
 
 
 def test_a_failing_first_export_leaves_no_skill_behind(tmp_path, monkeypatch):
