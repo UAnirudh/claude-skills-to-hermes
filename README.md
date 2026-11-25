@@ -185,8 +185,10 @@ receive skills.
 
 `skill-bridge doctor` checks the whole profile in one read-only pass and groups
 what it finds: copies whose source is gone (`sync --prune` fixes those), copies
-that no longer match a fresh conversion of their source (`sync` refreshes
-them), and frontmatter the target harness cannot express (parked in
+that no longer match their source or were edited after being written (both
+caught by the marker's fingerprints, with a fresh conversion as the fallback
+for copies from older versions; `sync` refreshes them), and frontmatter the
+target harness cannot express (parked in
 `metadata.skill-bridge.extra`, so nothing can restore it in place).
 `doctor --strict` exits 1 for the first two — the drift a command can fix — so
 CI can gate on it; lossy fields are reported but never fail the gate.
@@ -240,7 +242,7 @@ skill-bridge paths <format> [--scope global|project|both]
 - **Frontmatter fields** — translated per harness, in both directions (see below), not blindly copied
 - **Body** — preserved verbatim; Hermes adds `## When to Use` if missing (never twice)
 - **Supporting files** — `scripts/`, `references/`, `assets/`, `templates/` copied as-is; `reference/` renamed to `references/`
-- **Provenance** — a `.skill-bridge.json` marker in every generated skill, used to refresh safely, never clobber hand-written skills, and delete only bridge-made copies (`sync --prune`, `uninstall`)
+- **Provenance** — a `.skill-bridge.json` marker in every generated skill, used to refresh safely, never clobber hand-written skills, and delete only bridge-made copies (`sync --prune`, `uninstall`); it records content fingerprints of the source and of the copy as written, so `doctor` detects drift without re-converting anything
 
 ## Field translation across harnesses
 

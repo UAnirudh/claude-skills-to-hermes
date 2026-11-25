@@ -8,6 +8,7 @@ destroying a hand-written skill.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,12 +49,33 @@ def is_bridge_generated(skill_dir: Path) -> bool:
     return read_marker(skill_dir).get("generated-by") == GENERATOR
 
 
+def tree_hash(root: Path) -> str:
+    """Stable fingerprint of a skill directory's files.
+
+    Sorted relative paths and their bytes, so a renamed, added, removed or
+    edited file changes the digest. The provenance marker is skipped: it holds
+    a timestamp and these digests, so hashing it would make every copy differ
+    from itself.
+    """
+    digest = hashlib.sha256()
+    for entry in sorted(Path(root).rglob("*")):
+        if entry.is_dir() or entry.name == MARKER_FILENAME:
+            continue
+        digest.update(entry.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(entry.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def write_marker(
     skill_dir: Path,
     *,
     source_format: AgentFormat | None,
     target_format: AgentFormat,
     source_path: Path | None = None,
+    source_hash: str | None = None,
+    output_hash: str | None = None,
 ) -> Path:
     if not Path(skill_dir).is_dir():
         return marker_path(skill_dir)
@@ -66,6 +88,10 @@ def write_marker(
     }
     if source_path is not None:
         data["source-path"] = str(source_path)
+    if source_hash is not None:
+        data["source-sha"] = source_hash
+    if output_hash is not None:
+        data["output-sha"] = output_hash
     path = marker_path(skill_dir)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path

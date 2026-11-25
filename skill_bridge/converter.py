@@ -7,7 +7,7 @@ from pathlib import Path
 from skill_bridge.formats.base import get_exporter, load_exporters
 from skill_bridge.models import AgentFormat, ConversionResult
 from skill_bridge.parser import find_skills, load_skill
-from skill_bridge.provenance import write_marker
+from skill_bridge.provenance import tree_hash, write_marker
 from skill_bridge.validator import validate_skill
 
 
@@ -33,6 +33,9 @@ def convert_skill(
         report = validate_skill(bundle, strict_dir_name=False)
         warnings.extend(f"[{i.level}] {i.field}: {i.message}" for i in report.issues)
 
+    # Fingerprint the source before exporting, so `doctor` can tell a copy is
+    # behind without converting anything again.
+    source_hash = tree_hash(bundle.root)
     exporter = get_exporter(target_format)
     out = output_root or default_output_root(target_format)
     result = exporter.export(bundle, out)
@@ -41,6 +44,8 @@ def convert_skill(
         source_format=bundle.source_format,
         target_format=target_format,
         source_path=bundle.root,
+        source_hash=source_hash,
+        output_hash=tree_hash(result.output_dir),
     )
     result.warnings = warnings + result.warnings
     return result

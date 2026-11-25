@@ -8,16 +8,19 @@ no command can fix, so `--strict` must not fail on it).
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
 import yaml
 from click.testing import CliRunner
 
+from skill_bridge import doctor as doctor_module
 from skill_bridge.cli import main
 from skill_bridge.config import SkillLocation
 from skill_bridge.doctor import LOSSY, OUT_OF_SYNC, STALE, diagnose
 from skill_bridge.models import AgentFormat
+from skill_bridge.provenance import tree_hash, write_marker
 from skill_bridge.sync import run_sync
 
 
@@ -56,6 +59,15 @@ def write_config(tmp_path: Path, source: Path, target: Path) -> Path:
 
 def hermes(target: Path) -> list[SkillLocation]:
     return [SkillLocation(format=AgentFormat.HERMES, path=target)]
+
+
+def forbid_conversion(monkeypatch) -> None:
+    """Fail if doctor re-converts instead of trusting the marker fingerprints."""
+
+    def boom(*args, **kwargs):
+        raise AssertionError("doctor re-converted a copy that had fingerprints")
+
+    monkeypatch.setattr(doctor_module, "convert_skill", boom)
 
 
 def test_a_fresh_sync_leaves_nothing_to_report(tmp_path):
@@ -116,7 +128,7 @@ def test_doctor_reports_a_copy_that_no_longer_matches_its_source(tmp_path):
     report = diagnose(hermes(target))
 
     assert [finding.kind for finding in report.findings] == [OUT_OF_SYNC]
-    assert "SKILL.md" in report.findings[0].detail
+    assert "source changed" in report.findings[0].detail
 
     strict = CliRunner().invoke(
         main, ["doctor", "--config", str(config), "--strict"]
@@ -155,6 +167,91 @@ def test_doctor_ignores_hand_written_skills(tmp_path):
 
     assert report.checked == 0
     assert report.findings == []
+
+
+def test_markers_record_fingerprints_for_source_and_copy(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+
+    marker = json.loads(
+        (target / "demo" / ".skill-bridge.json").read_text(encoding="utf-8")
+    )
+
+    assert marker["source-sha"] == tree_hash(source / "demo")
+    assert marker["output-sha"] == tree_hash(target / "demo")
+
+
+def test_doctor_trusts_the_fingerprints_instead_of_reconverting(tmp_path, monkeypatch):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    forbid_conversion(monkeypatch)
+
+    report = diagnose(hermes(target))
+
+    assert report.checked == 1
+    assert report.clean
+
+
+def test_doctor_spots_a_hand_edited_copy_without_reconverting(tmp_path, monkeypatch):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    copy = target / "demo" / "SKILL.md"
+    copy.write_text(
+        copy.read_text(encoding="utf-8") + "\n<!-- edited by hand -->\n",
+        encoding="utf-8",
+    )
+    forbid_conversion(monkeypatch)
+
+    report = diagnose(hermes(target))
+
+    assert [finding.kind for finding in report.findings] == [OUT_OF_SYNC]
+    assert report.findings[0].detail == "copy changed since it was written"
+
+
+def test_doctor_spots_an_edited_source_without_reconverting(tmp_path, monkeypatch):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    skill = source / "demo" / "SKILL.md"
+    skill.write_text(
+        skill.read_text(encoding="utf-8") + "\n## Added later\n", encoding="utf-8"
+    )
+    forbid_conversion(monkeypatch)
+
+    report = diagnose(hermes(target))
+
+    assert [finding.kind for finding in report.findings] == [OUT_OF_SYNC]
+    assert report.findings[0].detail == "source changed since this copy was converted"
+
+
+def test_doctor_reconverts_a_marker_without_fingerprints(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    # A copy written by an older skill-bridge: no fingerprints to compare.
+    write_marker(
+        target / "demo",
+        source_format=AgentFormat.GENERIC,
+        target_format=AgentFormat.HERMES,
+        source_path=source / "demo",
+    )
+    skill = source / "demo" / "SKILL.md"
+    skill.write_text(
+        skill.read_text(encoding="utf-8") + "\n## Added later\n", encoding="utf-8"
+    )
+
+    report = diagnose(hermes(target))
+
+    assert [finding.kind for finding in report.findings] == [OUT_OF_SYNC]
+    assert "SKILL.md" in report.findings[0].detail
 
 
 def test_fix_prunes_stale_copies_and_refreshes_out_of_sync_ones(tmp_path):

@@ -130,10 +130,13 @@ jobs:
           skill-bridge sync --prune --dry-run > dry-run.txt
           test -d ".hermes/skills/gone" || { echo "dry run removed a skill"; exit 1; }
           grep -q "Would prune 1 skill" dry-run.txt
-          skill-bridge sync --prune > prune.txt
-          test ! -d ".hermes/skills/gone" || { echo "orphan survived prune"; exit 1; }
-          grep -q "Pruned 1 skill" prune.txt
-          # With the orphan gone the same gate passes again.
+          # doctor --fix applies both repairs itself: prune the orphan, refresh
+          # anything behind its source. It exits non-zero only if drift remains.
+          skill-bridge doctor --fix --strict > fix.txt
+          test ! -d ".hermes/skills/gone" || { echo "orphan survived doctor --fix"; exit 1; }
+          grep -q "Fixed 1 stale" fix.txt
+          grep -q "No drift left" fix.txt
+          # ...and the gate is still green afterwards.
           skill-bridge doctor --strict
           # A copy whose source still exists, and the hand-written skill, stay.
           test -f ".hermes/skills/keep/SKILL.md"

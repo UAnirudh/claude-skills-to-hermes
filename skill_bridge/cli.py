@@ -718,7 +718,7 @@ def doctor_cmd(
     """Report stale, out-of-sync and lossy copies in one pass.
 
     Stale copies are the ones `sync --prune` removes, and out-of-sync copies no
-    longer match a fresh conversion of their source, which `sync` refreshes;
+    longer match the fingerprints their marker recorded, which `sync` refreshes;
     --strict exits 1 for either, so CI can gate on drift. Lossy fields are the
     frontmatter a target cannot express, which conversion parks in
     metadata.skill-bridge.extra: they are inherent to the format pair, so they

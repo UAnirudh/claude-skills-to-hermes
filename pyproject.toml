@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "skill-bridge"
-version = "1.8.0"
+version = "1.9.0"
 description = "Convert agent skills between every coding harness: Claude Code, Hermes, Codex, Cursor, Gemini CLI, Copilot, OpenCode, Windsurf, and more"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -26,7 +26,12 @@ from skill_bridge.config import SkillLocation
 from skill_bridge.converter import convert_skill
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
-from skill_bridge.provenance import MARKER_FILENAME, is_bridge_generated
+from skill_bridge.provenance import (
+    MARKER_FILENAME,
+    is_bridge_generated,
+    read_marker,
+    tree_hash,
+)
 from skill_bridge.prune import recorded_source, source_disappeared
 from skill_bridge.sync import run_prune, run_sync
 
@@ -99,6 +104,31 @@ def _describe_difference(expected: dict[str, bytes], actual: dict[str, bytes]) -
 
 
 def _difference(skill_dir: Path, source: Path, target: AgentFormat) -> str | None:
+    """Why ``skill_dir`` no longer matches its source, or None.
+
+    Markers written since fingerprints were added record the source as it was
+    when the copy was made and the copy as it was written, so two hashes answer
+    the question without converting anything. Older markers carry neither and
+    fall back to comparing against a fresh conversion.
+    """
+    marker = read_marker(skill_dir)
+    source_sha = marker.get("source-sha")
+    output_sha = marker.get("output-sha")
+    try:
+        if source_sha and tree_hash(source) != source_sha:
+            return "source changed since this copy was converted"
+        if output_sha and tree_hash(skill_dir) != output_sha:
+            return "copy changed since it was written"
+    except OSError:
+        return "copy cannot be read"
+    if source_sha and output_sha:
+        return None  # both fingerprints agree: nothing to re-convert
+    return _reconverted_difference(skill_dir, source, target)
+
+
+def _reconverted_difference(
+    skill_dir: Path, source: Path, target: AgentFormat
+) -> str | None:
     """Why ``skill_dir`` differs from converting ``source`` now, or None."""
     scratch = Path(tempfile.mkdtemp(prefix="skill-bridge-doctor-"))
     try:
