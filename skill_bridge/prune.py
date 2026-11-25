@@ -21,7 +21,7 @@ from pathlib import Path
 from skill_bridge.config import SkillLocation
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, is_skill_dir, load_skill
-from skill_bridge.provenance import is_bridge_generated, read_marker
+from skill_bridge.provenance import is_bridge_generated, read_marker, resolve_source
 from skill_bridge.utils import slugify_name
 
 
@@ -59,16 +59,13 @@ class PruneOutcome:
 
 
 def recorded_source(skill_dir: Path) -> Path | None:
-    """The source directory the marker records, when it is safe to resolve."""
-    raw = read_marker(skill_dir).get("source-path")
-    if not raw:
-        return None
-    path = Path(str(raw)).expanduser()
-    # Older or hand-edited markers can be relative; without an absolute path
-    # "the source is gone" would just mean "relative to wherever sync ran".
-    if not path.is_absolute():
-        return None
-    return path
+    """The source directory the marker records, when it is safe to resolve.
+
+    Markers also store where the source sat relative to the tree the copy lives
+    in, so a copy committed to a repository still resolves after a clone: the
+    absolute path is gone, but the tree it named is not.
+    """
+    return resolve_source(skill_dir)
 
 
 def source_disappeared(skill_dir: Path) -> str | None:

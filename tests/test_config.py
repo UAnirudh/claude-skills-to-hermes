@@ -1,5 +1,6 @@
 """Profile composition: the ``auto-import`` profile and re-runs of ``install``."""
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -186,4 +187,25 @@ def test_config_file_records_scopes(project):
     text = Path(path).read_text(encoding="utf-8")
 
     assert "scope: project" in text
-    assert str(project / ".hermes" / "skills") in text
+    # Written relative to the config, so a clone at another path still means
+    # the same directory instead of naming the checkout that wrote the file.
+    assert "path: .hermes/skills" in text
+    loaded = load_config(path, project=project)
+    assert loaded.get_profile("auto-import").targets[0].path == (
+        project / ".hermes" / "skills"
+    )
+
+
+def test_a_saved_config_survives_a_clone(project, tmp_path):
+    save_config(
+        auto_import_config(AgentFormat.HERMES, scope="project"),
+        project / "skill-bridge.yaml",
+    )
+    clone = tmp_path / "clone"
+    shutil.copytree(project, clone)
+
+    loaded = load_config(clone / "skill-bridge.yaml")
+
+    assert loaded.get_profile("auto-import").targets[0].path == (
+        clone / ".hermes" / "skills"
+    )

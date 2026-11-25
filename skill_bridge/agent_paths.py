@@ -14,8 +14,16 @@ def user_home() -> Path:
     return Path.home()
 
 
-def expand_path(raw: str | Path) -> Path:
+def expand_path(raw: str | Path, base: Path | None = None) -> Path:
+    """Absolute form of a configured path, relative to ``base`` when one is given.
+
+    Config files are written with project-scoped paths relative to the config's
+    own directory, so a repository can be cloned anywhere and still point at its
+    own copies instead of the checkout that wrote the file.
+    """
     path = Path(os.path.expandvars(str(raw))).expanduser()
+    if base is not None and not path.is_absolute():
+        path = Path(base) / path
     return path.resolve()
 
 
@@ -43,7 +51,7 @@ def resolve_skill_path(
     override: str | Path | None = None,
 ) -> Path:
     if override:
-        return expand_path(override)
+        return expand_path(override, base=project)
     if scope == "project":
         return project_skill_root(fmt, project)
     return global_skill_root(fmt)

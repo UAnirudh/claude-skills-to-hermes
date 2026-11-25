@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,85 @@ def tree_hash(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _source_relative(skill_dir: Path, source_path: Path) -> str | None:
+    """The source's path below the tree it shares with the copy, if it has one.
+
+    Storing the absolute path alone makes a committed copy look stale the moment
+    the repository is cloned somewhere else; this is the part that survives the
+    move. A single component says nothing about where the source lives, so it is
+    not worth recording.
+    """
+    try:
+        copy_abs = os.path.abspath(skill_dir)
+        source_abs = os.path.abspath(source_path)
+        common = Path(os.path.commonpath([copy_abs, source_abs]))
+        relative = Path(source_abs).relative_to(common)
+    except ValueError:  # different drives on Windows, or no common ancestor
+        return None
+    if len(relative.parts) < 2:
+        return None
+    return relative.as_posix()
+
+
+def _relocated(
+    skill_dir: Path, relative: str, expected_source: str | None
+) -> Path | None:
+    """Find the source again by its relative path, walking up from the copy.
+
+    A fingerprint match wins wherever it is found; otherwise the nearest
+    candidate that exists is returned, because a source that changed since the
+    copy was written can no longer match its own hash.
+    """
+    if not relative:
+        return None
+    parts = relative.split("/")
+    if len(parts) < 2:
+        return None
+    closest: Path | None = None
+    for ancestor in Path(skill_dir).resolve().parents:
+        candidate = ancestor.joinpath(*parts)
+        if not candidate.is_dir():
+            continue
+        if expected_source:
+            try:
+                if tree_hash(candidate) == expected_source:
+                    return candidate
+            except OSError:
+                pass
+        if closest is None:
+            closest = candidate
+    return closest
+
+
+def resolve_source(
+    skill_dir: Path, marker: dict[str, Any] | None = None
+) -> Path | None:
+    """The source directory this copy came from, if it can be found.
+
+    The recorded absolute path is used when it still exists (the common case,
+    and the only one older markers have). When it does not — the repository was
+    cloned elsewhere, or the copy moved between operating systems — the source
+    is looked up by its path relative to the tree both lived in.
+    """
+    data = read_marker(skill_dir) if marker is None else marker
+    raw = data.get("source-path")
+    if not raw:
+        return None
+    recorded = Path(str(raw)).expanduser()
+    # A relative source path cannot prove anything: "gone" would only mean
+    # "relative to wherever sync happened to run".
+    if not recorded.is_absolute():
+        return None
+    if recorded.is_dir():
+        return recorded
+    # When it cannot be found anywhere, the recorded path is still the answer:
+    # callers check that it exists and conclude the source is gone, which is
+    # what a marker with no relative path could always prove.
+    return _relocated(
+        skill_dir, str(data.get("source-rel") or ""), data.get("source-sha")
+    ) or recorded
+
+
 def write_marker(
     skill_dir: Path,
     *,
@@ -88,6 +168,9 @@ def write_marker(
     }
     if source_path is not None:
         data["source-path"] = str(source_path)
+        relative = _source_relative(Path(skill_dir), Path(source_path))
+        if relative is not None:
+            data["source-rel"] = relative
     if source_hash is not None:
         data["source-sha"] = source_hash
     if output_hash is not None:

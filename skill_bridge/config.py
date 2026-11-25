@@ -242,13 +242,29 @@ def update_auto_import_config(
     return cfg
 
 
-def config_to_dict(config: BridgeConfig) -> dict[str, Any]:
+def _portable_path(path: Path, base: Path | None) -> str:
+    """``path`` relative to the config's directory when it sits underneath it.
+
+    A committed config has to mean the same thing in a fresh clone, and an
+    absolute path does not: it names the checkout that generated the file.
+    """
+    if base is not None:
+        try:
+            return Path(os.path.relpath(path, base)).as_posix()
+        except ValueError:  # different drives on Windows
+            pass
+    return str(path)
+
+
+def config_to_dict(
+    config: BridgeConfig, *, base: Path | None = None
+) -> dict[str, Any]:
     def loc_dict(loc: SkillLocation) -> dict[str, Any]:
         d: dict[str, Any] = {"format": loc.format.value}
         if loc.scope != "global":
             d["scope"] = loc.scope
         # Always write explicit path for clarity in user configs
-        d["path"] = str(loc.path)
+        d["path"] = _portable_path(loc.path, base)
         return d
 
     profiles: dict[str, Any] = {}
@@ -275,8 +291,13 @@ def config_to_dict(config: BridgeConfig) -> dict[str, Any]:
 
 def save_config(config: BridgeConfig, path: Path | None = None) -> Path:
     path = path or Path.cwd() / DEFAULT_CONFIG_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        yaml.safe_dump(config_to_dict(config), sort_keys=False, allow_unicode=True),
+        yaml.safe_dump(
+            config_to_dict(config, base=path.parent),
+            sort_keys=False,
+            allow_unicode=True,
+        ),
         encoding="utf-8",
     )
     config.config_path = path
@@ -301,8 +322,11 @@ def load_config(path: Path | None = None, project: Path | None = None) -> Bridge
             if not isinstance(data, dict):
                 raise ValueError(f"Invalid config file: {candidate}")
             profiles_raw = data.get("profiles") or {}
+            # Relative paths in the file mean relative to the file: that is what
+            # makes a committed config survive a clone at another path.
+            base = candidate.parent
             profiles = {
-                name: SyncProfile.from_dict(name, pdata, project=project)
+                name: SyncProfile.from_dict(name, pdata, project=base)
                 for name, pdata in profiles_raw.items()
             }
             cfg = BridgeConfig(

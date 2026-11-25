@@ -90,6 +90,7 @@ Safety rules that make automatic import safe to re-run:
 * skills converted earlier are refreshed (not duplicated);
 * each conversion is staged in a temporary directory beside the skills folder and renamed into place, so an interrupted or concurrent sync can never leave a half-written skill behind, and staging folders a killed run left behind are swept by `sync` and `doctor` once they are a day old;
 * a copy whose source was deleted or renamed can be removed with `sync --prune` (or `uninstall`), and a skill your harness wrote itself is never deleted;
+* both the marker and the config say **where the source sits inside the tree**, not only on this machine, so a repository with generated copies can be cloned to another path or another operating system and still find its sources: doctor checks the copies instead of calling them stale, and `sync --prune` does not delete them;
 * when several harnesses store skills in the same folder (`.agents/skills` is shared by Codex, Cursor, Gemini CLI, Copilot, OpenCode, Cline, Amp, Zed, Kilo Code, Warp), the destination folder is never treated as a source;
 * duplicate skill names across harnesses are imported once.
 
@@ -128,6 +129,11 @@ Run `skill-bridge init` to generate `skill-bridge.yaml`, or copy the example:
 ```bash
 cp skill-bridge.yaml.example skill-bridge.yaml
 ```
+
+Paths inside the file are written **relative to the file** for project scope
+(`path: .hermes/skills`), and a relative path is read the same way, so a
+config committed to a repository means the same directory after a clone. An
+absolute path (a home directory, a custom `--to-path`) keeps working as before.
 
 Example profiles:
 
@@ -268,7 +274,7 @@ skill-bridge paths <format> [--scope global|project|both]
 - **Frontmatter fields** — translated per harness, in both directions (see below), not blindly copied
 - **Body** — preserved verbatim; Hermes adds `## When to Use` if missing (never twice)
 - **Supporting files** — `scripts/`, `references/`, `assets/`, `templates/` copied as-is; `reference/` renamed to `references/`
-- **Provenance** — a `.skill-bridge.json` marker in every generated skill, used to refresh safely, never clobber hand-written skills, and delete only bridge-made copies (`sync --prune`, `uninstall`); it records content fingerprints of the source and of the copy as written, so `doctor` detects drift without re-converting anything
+- **Provenance** — a `.skill-bridge.json` marker in every generated skill, used to refresh safely, never clobber hand-written skills, and delete only bridge-made copies (`sync --prune`, `uninstall`); it records content fingerprints of the source and of the copy as written, so `doctor` detects drift without re-converting anything, and the source's path relative to the tree both live in, so the copy still resolves after a clone
 
 ## Field translation across harnesses
 
