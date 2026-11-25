@@ -20,6 +20,7 @@ Every major coding agent now uses the same core format: a folder with `SKILL.md`
 | Profile-based sync | `skill-bridge sync` |
 | Delete copies whose source was deleted or renamed | `skill-bridge sync --prune` |
 | Remove everything Skill Bridge added to a harness | `skill-bridge uninstall --harness hermes` |
+| Check for stale, out-of-sync and lossy skills | `skill-bridge doctor` |
 | Live watch mode | `skill-bridge watch` |
 | Batch all skills | `skill-bridge batch ~/.claude/skills --all-agents` |
 
@@ -182,6 +183,14 @@ what you just removed. Pass `--config PATH` when the profile lives somewhere
 `--stale-only` leaves the profile alone: that harness is still meant to
 receive skills.
 
+`skill-bridge doctor` checks the whole profile in one read-only pass and groups
+what it finds: copies whose source is gone (`sync --prune` fixes those), copies
+that no longer match a fresh conversion of their source (`sync` refreshes
+them), and frontmatter the target harness cannot express (parked in
+`metadata.skill-bridge.extra`, so nothing can restore it in place).
+`doctor --strict` exits 1 for the first two — the drift a command can fix — so
+CI can gate on it; lossy fields are reported but never fail the gate.
+
 ## Reverse conversion
 
 Pull skills from any harness into another:
@@ -214,6 +223,7 @@ skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]]
+skill-bridge doctor [--profile NAME] [-c PATH] [--strict]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]
 skill-bridge batch <root> --all-agents | --to <format>

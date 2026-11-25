@@ -31,6 +31,13 @@ from skill_bridge.config import (
     update_auto_import_config,
 )
 from skill_bridge.converter import convert_batch, convert_skill
+from skill_bridge.doctor import (
+    LOSSY,
+    OUT_OF_SYNC,
+    STALE,
+    DoctorReport,
+    diagnose,
+)
 from skill_bridge.formats.base import all_exporters, get_exporter, load_exporters
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
@@ -107,6 +114,40 @@ def _print_removals(
             console.print(
                 f"{WARN} {kept} skill(s) changed while planning and were kept"
             )
+
+
+DOCTOR_SECTIONS = (
+    (STALE, "Source gone", "skill-bridge sync --prune removes these", "red"),
+    (OUT_OF_SYNC, "Out of sync", "skill-bridge sync refreshes these", "yellow"),
+    (LOSSY, "Lossy fields", "kept in metadata.skill-bridge.extra", "cyan"),
+)
+
+
+def _print_doctor(report: DoctorReport) -> None:
+    """Group findings by kind, each section next to the command that fixes it."""
+    for kind, title, hint, colour in DOCTOR_SECTIONS:
+        findings = report.of_kind(kind)
+        if not findings:
+            continue
+        console.print(f"\n[bold]{title}[/bold] [dim]({hint})[/dim]")
+        for finding in findings:
+            console.print(
+                f"  [{colour}]{finding.skill_name}[/{colour}] "
+                f"({finding.target_format.value}) [dim]{finding.detail}[/dim]"
+            )
+    stale = len(report.of_kind(STALE))
+    drift = len(report.of_kind(OUT_OF_SYNC))
+    lossy = len(report.of_kind(LOSSY))
+    console.print()
+    if report.clean:
+        console.print(
+            f"{OK} {report.checked} generated copy(ies) checked, nothing to fix."
+        )
+        return
+    console.print(
+        f"[bold]Checked {report.checked} generated copy(ies):[/bold] "
+        f"{stale} stale, {drift} out of sync, {lossy} lossy"
+    )
 
 
 def _print_adopt(report: AdoptReport, *, dry_run: bool = False) -> None:
@@ -641,6 +682,45 @@ def uninstall_cmd(
             console.print(
                 f"[dim]Dropped the uninstalled target from {path}.[/dim]"
             )
+
+
+@main.command("doctor")
+@click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
+@click.option("-c", "--config", "config_path", type=click.Path(exists=True, path_type=Path), default=None)
+@click.option("--strict", is_flag=True, help="Exit 1 when a copy is stale or out of sync")
+def doctor_cmd(profile: str | None, config_path: Path | None, strict: bool) -> None:
+    """Report stale, out-of-sync and lossy copies in one read-only pass.
+
+    Stale copies are the ones `sync --prune` removes, and out-of-sync copies no
+    longer match a fresh conversion of their source, which `sync` refreshes;
+    --strict exits 1 for either, so CI can gate on drift. Lossy fields are the
+    frontmatter a target cannot express, which conversion parks in
+    metadata.skill-bridge.extra: they are inherent to the format pair, so they
+    are reported but never fail --strict.
+    """
+    load_exporters()
+    try:
+        config = load_config(config_path)
+        prof = config.get_profile(profile)
+    except KeyError as exc:
+        message = str(exc.args[0]) if exc.args else str(exc)
+        console.print(f"[red]{message}[/red]")
+        raise SystemExit(1) from exc
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1) from exc
+
+    if prof.auto_sources:
+        source_label = "auto (every other detected harness)"
+    else:
+        locs = prof.sources or ([prof.source] if prof.source else [])
+        source_label = ", ".join(f"{loc.format.value}:{loc.path}" for loc in locs)
+    console.print(f"[bold]Profile:[/bold] {prof.name}  [bold]sources:[/bold] {source_label}")
+
+    report = diagnose(prof.targets)
+    _print_doctor(report)
+    if strict and report.drift:
+        raise SystemExit(1)
 
 
 @main.command("adopt")
