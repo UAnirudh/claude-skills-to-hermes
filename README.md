@@ -175,6 +175,11 @@ Bridge created in that harness (`--stale-only` limits it to copies whose
 source is gone, `--dry-run` previews either). A skill the harness authored
 itself has no marker, so it is never a candidate for either command.
 
+An uninstall also drops the target it emptied from `skill-bridge.yaml`, and
+deletes the file once no profile is left, so the next `sync` cannot recreate
+what you just removed. `--stale-only` leaves the profile alone: that harness
+is still meant to receive skills.
+
 ## Reverse conversion
 
 Pull skills from any harness into another:

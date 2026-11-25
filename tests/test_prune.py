@@ -18,7 +18,9 @@ from skill_bridge.agent_paths import global_skill_root
 from skill_bridge.cli import main
 from skill_bridge.config import (
     SkillLocation,
+    SyncProfile,
     auto_import_config,
+    load_config,
     save_config,
 )
 from skill_bridge.models import AgentFormat
@@ -314,3 +316,116 @@ def test_deleting_a_source_does_not_resurrect_it_into_another_harness(
     assert sorted(item.skill_name for item in outcome.removed) == ["native", "native"]
     for fmt in (AgentFormat.HERMES, AgentFormat.CURSOR):
         assert not (global_skill_root(fmt) / "native").exists()
+
+
+def test_uninstall_drops_the_profile_so_a_later_sync_cannot_recreate(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    # load_config resolves the last candidate through Path.home().
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(agent_paths, "user_home", lambda: home)
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    write_skill(project / ".claude" / "skills", "demo")
+
+    runner = CliRunner()
+    installed = runner.invoke(
+        main, ["install", "--harness", "hermes", "--scope", "project"]
+    )
+    assert installed.exit_code == 0, installed.output
+    copy = project / ".hermes" / "skills" / "demo"
+    config = project / "skill-bridge.yaml"
+    assert (copy / "SKILL.md").is_file()
+    assert config.is_file()
+
+    result = runner.invoke(
+        main, ["uninstall", "--harness", "hermes", "--scope", "project"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Removed 1 skill(s)" in result.output
+    assert not copy.exists()
+    # The profile that produced the copy goes with it...
+    assert not config.exists()
+
+    # ...so the next sync has nothing left to recreate them from.
+    synced = runner.invoke(main, ["sync"])
+    assert synced.exit_code == 1, synced.output
+    assert "No skill-bridge.yaml found" in synced.output
+    assert not copy.exists()
+
+
+def test_uninstall_only_forgets_the_target_it_emptied(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    # 'sources: auto' resolves harness directories from the working directory.
+    monkeypatch.chdir(project)
+    write_skill(project / ".claude" / "skills", "demo")
+    config = project / "skill-bridge.yaml"
+    save_config(
+        auto_import_config(
+            [AgentFormat.HERMES, AgentFormat.CURSOR],
+            scope="project",
+            project=project,
+        ),
+        config,
+    )
+    # A profile the user wrote themselves must survive untouched.
+    cfg = load_config(config, project=project)
+    cfg.profiles["mine"] = SyncProfile(
+        name="mine",
+        source=SkillLocation(
+            format=AgentFormat.GENERIC, path=project / ".claude" / "skills"
+        ),
+        targets=[SkillLocation(format=AgentFormat.GENERIC, path=project / "out")],
+    )
+    save_config(cfg, config)
+    run_sync(config_path=config)
+    hermes_copy = project / ".hermes" / "skills" / "demo"
+    cursor_copy = project / ".cursor" / "skills" / "demo"
+    assert (hermes_copy / "SKILL.md").is_file()
+    assert (cursor_copy / "SKILL.md").is_file()
+
+    result = CliRunner().invoke(
+        main, ["uninstall", "--harness", "hermes", "--scope", "project"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not hermes_copy.exists()
+    assert (cursor_copy / "SKILL.md").is_file()
+    assert config.is_file()
+    after = load_config(config, project=project)
+    assert "mine" in after.profiles
+    assert [t.format for t in after.profiles["auto-import"].targets] == [
+        AgentFormat.CURSOR
+    ]
+
+
+def test_stale_only_uninstall_leaves_the_profile_alone(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    shutil.rmtree(source / "demo")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "uninstall",
+            "--harness",
+            "hermes",
+            "--to-path",
+            str(target),
+            "--stale-only",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (target / "demo").exists()
+    # That harness is still a target, so sync must keep refreshing it.
+    after = load_config(config, project=tmp_path)
+    assert [t.path for t in after.profiles["test"].targets] == [target]

@@ -24,6 +24,7 @@ from skill_bridge.config import (
     BridgeConfig,
     SkillLocation,
     auto_import_config,
+    forget_targets,
     init_config_interactive,
     load_config,
     save_config,
@@ -613,6 +614,23 @@ def uninstall_cmd(
         action="remove",
         dry_run_action="would remove",
     )
+
+    # Deleting the copies is only half the job: the profile that produced them
+    # would put every one back on the next sync. A --stale-only run leaves the
+    # target alone, because that harness is still meant to receive skills.
+    if removed and not stale_only:
+        emptied = {os.path.realpath(item.target_root) for item in removed}
+        forgotten = forget_targets(
+            [loc for loc in locations if os.path.realpath(loc.path) in emptied]
+        )
+        for path in forgotten.deleted:
+            console.print(
+                f"[dim]Deleted {path}: no profile targets it any more.[/dim]"
+            )
+        for path in forgotten.updated:
+            console.print(
+                f"[dim]Dropped the uninstalled target from {path}.[/dim]"
+            )
 
 
 @main.command("adopt")

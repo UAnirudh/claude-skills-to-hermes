@@ -283,13 +283,18 @@ def save_config(config: BridgeConfig, path: Path | None = None) -> Path:
     return path
 
 
-def load_config(path: Path | None = None, project: Path | None = None) -> BridgeConfig:
-    project = project or Path.cwd()
-    candidates = [path] if path else [
+def _config_candidates(project: Path) -> list[Path]:
+    """Every place ``load_config`` looks for a config, in priority order."""
+    return [
         project / DEFAULT_CONFIG_NAME,
         project / ".skill-bridge" / DEFAULT_CONFIG_NAME,
         Path.home() / DEFAULT_CONFIG_NAME,
     ]
+
+
+def load_config(path: Path | None = None, project: Path | None = None) -> BridgeConfig:
+    project = project or Path.cwd()
+    candidates = [path] if path else _config_candidates(project)
     for candidate in candidates:
         if candidate and candidate.is_file():
             data = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
@@ -309,6 +314,80 @@ def load_config(path: Path | None = None, project: Path | None = None) -> Bridge
     raise FileNotFoundError(
         f"No {DEFAULT_CONFIG_NAME} found. Run: skill-bridge init"
     )
+
+
+@dataclass
+class ForgottenTargets:
+    """Config files changed by forgetting the targets ``uninstall`` emptied."""
+
+    updated: list[Path] = field(default_factory=list)
+    deleted: list[Path] = field(default_factory=list)
+
+
+def forget_targets(
+    locations: Iterable[SkillLocation],
+    *,
+    project: Path | None = None,
+) -> ForgottenTargets:
+    """Drop profile targets that point at skill folders being uninstalled.
+
+    Deleting the copies is only half of an uninstall: the profile that
+    produced them stays in the config, so the next ``sync`` (or a running
+    ``watch``) puts every one of them back. This removes exactly the targets
+    that name one of ``locations``.
+
+    Matching is by real path, so uninstalling one directory never disturbs a
+    profile aimed at another, and a user's own profiles are only touched when
+    they point at the removed directory too. A profile left without any target
+    is dropped; a config file left without any profile is deleted.
+    """
+    project = project or Path.cwd()
+    gone = {os.path.realpath(loc.path) for loc in locations}
+    result = ForgottenTargets()
+    if not gone:
+        return result
+
+    seen: set[str] = set()
+    for path in _config_candidates(project):
+        key = os.path.realpath(path)
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        try:
+            config = load_config(path, project=project)
+        except (OSError, ValueError, yaml.YAMLError):
+            continue  # a config we cannot read is not ours to rewrite
+
+        changed = False
+        for name in list(config.profiles):
+            profile = config.profiles[name]
+            kept = [
+                target
+                for target in profile.targets
+                if os.path.realpath(target.path) not in gone
+            ]
+            if len(kept) == len(profile.targets):
+                continue
+            changed = True
+            profile.targets = kept
+            if not kept:
+                del config.profiles[name]
+        if not changed:
+            continue
+
+        if config.profiles:
+            if config.default_profile not in config.profiles:
+                config.default_profile = next(iter(config.profiles))
+            save_config(config, path)
+            result.updated.append(path)
+            continue
+
+        path.unlink()
+        result.deleted.append(path)
+        # Do not leave an empty .skill-bridge/ behind after its only file goes.
+        if path.parent.name == ".skill-bridge" and not any(path.parent.iterdir()):
+            path.parent.rmdir()
+    return result
 
 
 def init_config_interactive(
