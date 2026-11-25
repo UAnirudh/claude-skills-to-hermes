@@ -1,0 +1,316 @@
+"""Pruning and uninstalling generated copies, safely.
+
+The contract: a copy whose recorded source was deleted or renamed is removed;
+a skill the harness wrote itself is never touched. The provenance marker is the
+only thing that separates the two.
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import yaml
+from click.testing import CliRunner
+
+from skill_bridge import agent_paths
+from skill_bridge.agent_paths import global_skill_root
+from skill_bridge.cli import main
+from skill_bridge.config import (
+    SkillLocation,
+    auto_import_config,
+    save_config,
+)
+from skill_bridge.models import AgentFormat
+from skill_bridge.prune import plan_removals, source_disappeared
+from skill_bridge.provenance import write_marker
+from skill_bridge.sync import collect_source_skills, run_prune, run_sync
+
+
+def write_skill(root: Path, name: str, *, title: str | None = None) -> Path:
+    skill_dir = root / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {title or name}\n"
+        f"description: {name} used by the prune tests.\n"
+        "---\n\n"
+        "# Demo\n",
+        encoding="utf-8",
+    )
+    return skill_dir
+
+
+def write_config(tmp_path: Path, source: Path, target: Path) -> Path:
+    config = {
+        "default_profile": "test",
+        "profiles": {
+            "test": {
+                "source": {"format": "generic", "path": str(source)},
+                "targets": [{"format": "hermes", "path": str(target)}],
+                "watch": True,
+                "validate": True,
+            }
+        },
+    }
+    path = tmp_path / "skill-bridge.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_prune_removes_the_copy_of_a_deleted_source(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    assert (target / "demo" / "SKILL.md").is_file()
+
+    shutil.rmtree(source / "demo")
+    outcome = run_prune(config_path=config)
+
+    assert [item.skill_name for item in outcome.removed] == ["demo"]
+    assert not (target / "demo").exists()
+
+
+def test_cli_sync_prune_removes_a_renamed_copy_and_imports_the_new_name(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+
+    # Rename both the folder and the frontmatter name.
+    (source / "demo").rename(source / "renamed")
+    (source / "renamed" / "SKILL.md").write_text(
+        "---\nname: renamed\ndescription: The renamed skill.\n---\n\n# Renamed\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        main, ["sync", "--config", str(config), "--prune"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Pruned 1 skill(s)" in result.output
+    assert not (target / "demo").exists()
+    assert (target / "renamed" / "SKILL.md").is_file()
+
+
+def test_prune_removes_the_old_copy_when_only_the_skill_name_changed(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    skill = write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    assert (target / "demo").is_dir()
+
+    # Same folder, new frontmatter name: the output directory changes name.
+    (skill / "SKILL.md").write_text(
+        "---\nname: demo-two\ndescription: Renamed in place.\n---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    run_sync(config_path=config)
+    outcome = run_prune(config_path=config)
+
+    assert [item.skill_name for item in outcome.removed] == ["demo"]
+    assert not (target / "demo").exists()
+    assert (target / "demo-two" / "SKILL.md").is_file()
+
+
+def test_prune_never_removes_a_hand_written_skill(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+
+    native = write_skill(target, "hand-written")
+    shutil.rmtree(source / "demo")
+    outcome = run_prune(config_path=config)
+
+    assert [item.skill_name for item in outcome.removed] == ["demo"]
+    assert native.is_dir()
+    assert native in outcome.plan.kept_native
+
+
+def test_prune_keeps_copies_whose_source_still_exists(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+
+    outcome = run_prune(config_path=config)
+
+    assert outcome.plan.items == []
+    assert (target / "demo" / "SKILL.md").is_file()
+
+
+def test_prune_dry_run_reports_without_removing_or_syncing(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    shutil.rmtree(source / "demo")
+
+    result = CliRunner().invoke(
+        main, ["sync", "--config", str(config), "--prune", "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Would prune 1 skill(s)" in result.output
+    assert "Dry run: sync skipped" in result.output
+    assert (target / "demo" / "SKILL.md").is_file()
+
+
+def test_dry_run_without_prune_is_rejected(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    config = write_config(tmp_path, source, target)
+
+    result = CliRunner().invoke(main, ["sync", "--config", str(config), "--dry-run"])
+
+    assert result.exit_code == 2
+    assert "--prune" in result.output
+
+
+def test_a_reappearing_source_is_imported_again(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    shutil.rmtree(source / "demo")
+    run_prune(config_path=config)
+    assert not (target / "demo").exists()
+
+    write_skill(source, "demo")
+    run_sync(config_path=config)
+
+    assert (target / "demo" / "SKILL.md").is_file()
+    assert source_disappeared(target / "demo") is None
+
+
+def test_uninstall_removes_generated_copies_and_keeps_native_ones(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    native = write_skill(target, "hand-written")
+
+    preview = CliRunner().invoke(
+        main,
+        ["uninstall", "--harness", "hermes", "--to-path", str(target), "--dry-run"],
+    )
+
+    assert preview.exit_code == 0, preview.output
+    assert "would remove" in preview.output
+    assert "hand-written" in preview.output
+    assert (target / "demo").is_dir()
+
+    result = CliRunner().invoke(
+        main, ["uninstall", "--harness", "hermes", "--to-path", str(target)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (target / "demo").exists()
+    assert native.is_dir()
+    assert "Removed 1 skill(s)" in result.output
+
+
+def test_uninstall_stale_only_keeps_copies_whose_source_exists(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "gone")
+    write_skill(source, "kept")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    shutil.rmtree(source / "gone")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "uninstall",
+            "--harness",
+            "hermes",
+            "--to-path",
+            str(target),
+            "--stale-only",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (target / "gone").exists()
+    assert (target / "kept" / "SKILL.md").is_file()
+
+
+def test_uninstall_needs_an_explicit_target(tmp_path):
+    bare = CliRunner().invoke(main, ["uninstall"])
+    both = CliRunner().invoke(
+        main, ["uninstall", "--harness", "hermes", "--all"]
+    )
+
+    assert bare.exit_code == 2
+    assert "not both" in both.output
+
+
+def test_a_generated_copy_without_a_source_path_is_only_removed_by_uninstall(tmp_path):
+    target = tmp_path / "tgt"
+    ghost = write_skill(target, "ghost")
+    write_marker(
+        ghost,
+        source_format=AgentFormat.GENERIC,
+        target_format=AgentFormat.HERMES,
+    )
+    locations = [SkillLocation(format=AgentFormat.HERMES, path=target)]
+
+    assert plan_removals(locations).items == []
+    assert [item.skill_name for item in plan_removals(locations, stale_only=False).items] == [
+        "ghost"
+    ]
+
+
+def test_a_stale_generated_copy_is_not_used_as_a_source(tmp_path):
+    root = tmp_path / "skills"
+    ghost = write_skill(root, "ghost")
+    write_marker(
+        ghost,
+        source_format=AgentFormat.GENERIC,
+        target_format=AgentFormat.HERMES,
+        source_path=tmp_path / "deleted-source",
+    )
+    write_skill(root, "real")
+
+    entries = collect_source_skills(
+        [SkillLocation(format=AgentFormat.GENERIC, path=root)]
+    )
+
+    assert [skill_dir.name for _, skill_dir in entries] == ["real"]
+
+
+def test_deleting_a_source_does_not_resurrect_it_into_another_harness(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(agent_paths, "user_home", lambda: home)
+    claude = global_skill_root(AgentFormat.CLAUDE_CODE)
+    write_skill(claude, "native")
+
+    config = tmp_path / "skill-bridge.yaml"
+    save_config(
+        auto_import_config([AgentFormat.HERMES, AgentFormat.CURSOR]), config
+    )
+    run_sync(config_path=config)
+    for fmt in (AgentFormat.HERMES, AgentFormat.CURSOR):
+        assert (global_skill_root(fmt) / "native" / "SKILL.md").is_file()
+
+    shutil.rmtree(claude / "native")
+
+    # Both remaining copies are generated from the deleted skill, so neither
+    # may act as a source for the other.
+    try:
+        run_sync(config_path=config)
+    except FileNotFoundError:
+        pass
+    else:  # pragma: no cover - a resurrection would put skills back
+        raise AssertionError("a stale generated copy was imported as a source")
+
+    outcome = run_prune(config_path=config)
+
+    assert sorted(item.skill_name for item in outcome.removed) == ["native", "native"]
+    for fmt in (AgentFormat.HERMES, AgentFormat.CURSOR):
+        assert not (global_skill_root(fmt) / "native").exists()

@@ -18,6 +18,8 @@ Every major coding agent now uses the same core format: a folder with `SKILL.md`
 | One-shot convert | `skill-bridge convert ./my-skill --to hermes --to codex` |
 | Reverse sync (Hermes → Claude) | `skill-bridge reverse --from hermes --to claude-code` |
 | Profile-based sync | `skill-bridge sync` |
+| Delete copies whose source was deleted or renamed | `skill-bridge sync --prune` |
+| Remove everything Skill Bridge added to a harness | `skill-bridge uninstall --harness hermes` |
 | Live watch mode | `skill-bridge watch` |
 | Batch all skills | `skill-bridge batch ~/.claude/skills --all-agents` |
 
@@ -85,6 +87,7 @@ Safety rules that make automatic import safe to re-run:
 
 * a skill your harness authored itself is **never** overwritten without `--force`;
 * skills converted earlier are refreshed (not duplicated);
+* a copy whose source was deleted or renamed can be removed with `sync --prune` (or `uninstall`), and a skill your harness wrote itself is never deleted;
 * when several harnesses store skills in the same folder (`.agents/skills` is shared by Codex, Cursor, Gemini CLI, Copilot, OpenCode, Cline, Amp, Zed, Kilo Code, Warp), the destination folder is never treated as a source;
 * duplicate skill names across harnesses are imported once.
 
@@ -157,9 +160,20 @@ Then:
 
 ```bash
 skill-bridge sync                    # sync all skills once
+skill-bridge sync --prune            # also delete copies whose source was deleted/renamed
+skill-bridge sync --prune --dry-run  # list those copies, change nothing
 skill-bridge watch                   # re-sync on file changes
 skill-bridge sync --skill my-skill   # sync one skill
 ```
+
+`sync` refreshes copies but never deletes them, so rename or delete a source
+skill and the old copy stays in every harness. `sync --prune` removes those
+copies using the `.skill-bridge.json` marker to prove where each one came
+from; `--dry-run` lists them without writing.
+`skill-bridge uninstall --harness <id>` does the same for every copy Skill
+Bridge created in that harness (`--stale-only` limits it to copies whose
+source is gone, `--dry-run` previews either). A skill the harness authored
+itself has no marker, so it is never a candidate for either command.
 
 ## Reverse conversion
 
@@ -192,7 +206,8 @@ skill-bridge inspect <skill-dir>
 skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
-skill-bridge sync [--profile NAME] [--skill NAME]
+skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]]
+skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]
 skill-bridge batch <root> --all-agents | --to <format>
 skill-bridge paths <format> [--scope global|project|both]
@@ -204,7 +219,7 @@ skill-bridge paths <format> [--scope global|project|both]
 - **Frontmatter fields** — translated per harness, in both directions (see below), not blindly copied
 - **Body** — preserved verbatim; Hermes adds `## When to Use` if missing (never twice)
 - **Supporting files** — `scripts/`, `references/`, `assets/`, `templates/` copied as-is; `reference/` renamed to `references/`
-- **Provenance** — a `.skill-bridge.json` marker in every generated skill, used to refresh safely and never clobber hand-written skills
+- **Provenance** — a `.skill-bridge.json` marker in every generated skill, used to refresh safely, never clobber hand-written skills, and delete only bridge-made copies (`sync --prune`, `uninstall`)
 
 ## Field translation across harnesses
 

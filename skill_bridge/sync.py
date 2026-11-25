@@ -11,6 +11,12 @@ from skill_bridge.converter import convert_skill
 from skill_bridge.formats.base import load_exporters
 from skill_bridge.models import AgentFormat, ConversionResult
 from skill_bridge.parser import find_skills, load_skill
+from skill_bridge.prune import (
+    PruneOutcome,
+    apply_removals,
+    plan_removals,
+    source_disappeared,
+)
 from skill_bridge.utils import slugify_name
 
 load_exporters()
@@ -102,6 +108,11 @@ def collect_source_skills(
             if real in seen_paths:
                 continue
             seen_paths.add(real)
+            if source_disappeared(skill_dir):
+                # A copy whose source is gone must not feed the sync back into
+                # another harness (which would resurrect a deleted skill).
+                # `sync --prune` deletes it instead.
+                continue
             slug = slugify_name(skill_dir.name)
             if slug in seen_names:
                 continue
@@ -194,3 +205,24 @@ def run_sync(
     config: BridgeConfig = load_config(config_path)
     profile = config.get_profile(profile_name)
     return sync_profile(profile, skill_name=skill_name)
+
+
+def run_prune(
+    profile_name: str | None = None,
+    config_path: Path | None = None,
+    *,
+    skill_name: str | None = None,
+    stale_only: bool = True,
+    dry_run: bool = False,
+) -> PruneOutcome:
+    """Delete generated copies whose recorded source disappeared.
+
+    ``dry_run`` plans the same removals and reports them without writing.
+    """
+    config: BridgeConfig = load_config(config_path)
+    profile = config.get_profile(profile_name)
+    plan = plan_removals(
+        profile.targets, stale_only=stale_only, skill_name=skill_name
+    )
+    removed = [] if dry_run else apply_removals(plan.items)
+    return PruneOutcome(plan=plan, removed=removed, dry_run=dry_run)

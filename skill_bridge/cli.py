@@ -22,6 +22,7 @@ from skill_bridge.compat import lossy_fields
 from skill_bridge.config import (
     DEFAULT_CONFIG_NAME,
     BridgeConfig,
+    SkillLocation,
     auto_import_config,
     init_config_interactive,
     load_config,
@@ -33,7 +34,8 @@ from skill_bridge.formats.base import all_exporters, get_exporter, load_exporter
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.provenance import is_bridge_generated
-from skill_bridge.sync import reverse_convert, run_sync
+from skill_bridge.prune import RemovalPlan, RemovalItem, apply_removals, plan_removals
+from skill_bridge.sync import reverse_convert, run_prune, run_sync
 from skill_bridge.validator import validate_skill
 from skill_bridge.watch import watch_from_config, watch_roots
 
@@ -65,6 +67,45 @@ def _print_results(results, *, show_path: bool = True) -> None:
         console.print(f"{OK} {r.skill_name} {ARROW} {r.target_format.value}{loc}")
         for w in r.warnings:
             console.print(f"  {WARN} {w}")
+
+
+def _print_removals(
+    plan: RemovalPlan,
+    removed: list[RemovalItem],
+    *,
+    dry_run: bool,
+    action: str,
+    dry_run_action: str,
+) -> None:
+    """Report a prune/uninstall: what went (or would go), and what stayed."""
+    verb = dry_run_action if dry_run else action
+    for item in plan.items:
+        console.print(
+            f"[red]{verb:<13}[/] {item.skill_name} ({item.target_format.value}) "
+            f"[dim]{item.reason}[/dim]"
+        )
+    if plan.kept_native and action == "remove":
+        console.print(
+            f"[dim]Left {len(plan.kept_native)} hand-written skill(s) alone."
+            "[/dim]"
+        )
+    if not plan.items:
+        console.print("[dim]Nothing to remove.[/dim]")
+        return
+    if dry_run:
+        console.print(
+            f"\n[bold]Would {action} {len(plan.items)} skill(s)[/bold]. "
+            "Re-run without --dry-run to remove them."
+        )
+    else:
+        console.print(
+            f"\n[bold]{action.capitalize()}d {len(removed)} skill(s)[/bold]"
+        )
+        kept = len(plan.items) - len(removed)
+        if kept:
+            console.print(
+                f"{WARN} {kept} skill(s) changed while planning and were kept"
+            )
 
 
 def _print_adopt(report: AdoptReport, *, dry_run: bool = False) -> None:
@@ -482,6 +523,98 @@ def install_cmd(
         console.print("\nKeep it current: [cyan]skill-bridge sync[/cyan] or [cyan]skill-bridge watch[/cyan]")
 
 
+@main.command("uninstall")
+@click.option("-H", "--harness", default=None, help="Harness to clean (e.g. hermes)")
+@click.option(
+    "--all",
+    "all_harnesses",
+    is_flag=True,
+    help="Clean every harness detected on this machine",
+)
+@click.option("--scope", type=click.Choice(["global", "project", "both"]), default="global")
+@click.option(
+    "--to-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the target skills directory",
+)
+@click.option(
+    "--stale-only",
+    is_flag=True,
+    help="Only copies whose source was deleted or renamed",
+)
+@click.option("--dry-run", is_flag=True, help="Report what would be removed, change nothing")
+def uninstall_cmd(
+    harness: str | None,
+    all_harnesses: bool,
+    scope: str,
+    to_path: Path | None,
+    stale_only: bool,
+    dry_run: bool,
+) -> None:
+    """Remove the skills skill-bridge created in a harness.
+
+    Copies carry a .skill-bridge.json marker, so skills the harness authored
+    itself are left alone. --stale-only deletes just the copies whose source
+    was deleted or renamed (the same set `sync --prune` removes).
+    """
+    load_exporters()
+    if bool(harness) == bool(all_harnesses):
+        raise click.UsageError("Use --harness <id> or --all, not both")
+    if to_path and all_harnesses:
+        raise click.UsageError("--to-path needs a single target; use --harness")
+
+    scopes = ["global", "project"] if scope == "both" else [scope]
+    if harness:
+        targets = [_parse_format(harness)]
+    else:
+        detected = _detected_harnesses(scopes)
+        if not detected:
+            console.print(
+                "[yellow]No harness skill directories found.[/yellow] "
+                "Nothing to uninstall."
+            )
+            return
+        targets = sorted(detected, key=lambda fmt: fmt.value)
+
+    locations: list[SkillLocation] = []
+    seen: set[str] = set()
+    for one_scope in scopes:
+        for fmt, root in _unique_roots(targets, one_scope, to_path):
+            key = os.path.realpath(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            locations.append(
+                SkillLocation(
+                    format=fmt,
+                    path=root,
+                    scope="custom" if to_path else one_scope,
+                )
+            )
+
+    console.print(f"[bold]Harness:[/bold] {', '.join(fmt.value for fmt in targets)}")
+    missing = [loc for loc in locations if not loc.path.is_dir()]
+    for loc in locations:
+        state = "" if loc.path.is_dir() else " [dim](not found)[/dim]"
+        console.print(f"[bold]Skills in:[/bold] {loc.path}{state}")
+    if len(missing) == len(locations):
+        return
+
+    plan = plan_removals(
+        [loc for loc in locations if loc.path.is_dir()], stale_only=stale_only
+    )
+    removed = [] if dry_run else apply_removals(plan.items)
+    console.print()
+    _print_removals(
+        plan,
+        removed,
+        dry_run=dry_run,
+        action="remove",
+        dry_run_action="would remove",
+    )
+
+
 @main.command("adopt")
 @click.option("--to", "target_format", required=True, help="Harness to convert skills into")
 @click.option("--from", "from_formats", multiple=True, help="Only import from these harnesses (repeatable)")
@@ -692,24 +825,87 @@ def reverse_cmd(
 @click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
 @click.option("-c", "--config", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--skill", "skill_name", default=None, help="Sync only one skill by name")
-def sync_cmd(profile: str | None, config: Path | None, skill_name: str | None) -> None:
+@click.option(
+    "--prune",
+    is_flag=True,
+    help="Remove generated copies whose source was deleted or renamed",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="With --prune: report what would be removed, change nothing",
+)
+def sync_cmd(
+    profile: str | None,
+    config: Path | None,
+    skill_name: str | None,
+    prune: bool,
+    dry_run: bool,
+) -> None:
     """Sync skills using skill-bridge.yaml profile (sources -> all targets)."""
+    if dry_run and not prune:
+        raise click.UsageError("--dry-run only applies together with --prune")
+
     try:
-        results = run_sync(profile_name=profile, config_path=config, skill_name=skill_name)
+        cfg = load_config(config)
+        prof = cfg.get_profile(profile)
+    except KeyError as exc:
+        message = str(exc.args[0]) if exc.args else str(exc)
+        console.print(f"[red]{message}[/red]")
+        raise SystemExit(1) from exc
     except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1) from exc
 
-    cfg = load_config(config)
-    prof = cfg.get_profile(profile)
     if prof.auto_sources:
         source_label = "auto (every other detected harness)"
     else:
         locs = prof.sources or ([prof.source] if prof.source else [])
         source_label = ", ".join(f"{loc.format.value}:{loc.path}" for loc in locs)
     console.print(f"[bold]Profile:[/bold] {prof.name}  [bold]sources:[/bold] {source_label}")
-    _print_results(results)
-    console.print(f"\n[bold]Synced {len(results)} conversion(s)[/bold]")
+
+    results = []
+    if dry_run:
+        console.print("[dim]Dry run: sync skipped, only pruning is reported.[/dim]")
+    else:
+        try:
+            results = run_sync(
+                profile_name=profile, config_path=config, skill_name=skill_name
+            )
+        except FileNotFoundError as exc:
+            if not prune:
+                console.print(f"[red]{exc}[/red]")
+                raise SystemExit(1) from exc
+            # Nothing left to import is exactly when pruning matters most.
+            console.print(f"{WARN} {exc}")
+        _print_results(results)
+        console.print(f"\n[bold]Synced {len(results)} conversion(s)[/bold]")
+
+    if not prune:
+        return
+
+    try:
+        outcome = run_prune(
+            profile_name=profile,
+            config_path=config,
+            skill_name=skill_name,
+            dry_run=dry_run,
+        )
+    except KeyError as exc:
+        message = str(exc.args[0]) if exc.args else str(exc)
+        console.print(f"[red]{message}[/red]")
+        raise SystemExit(1) from exc
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1) from exc
+
+    _print_removals(
+        outcome.plan,
+        outcome.removed,
+        dry_run=dry_run,
+        action="prune",
+        dry_run_action="would prune",
+    )
 
 
 @main.command("watch")
