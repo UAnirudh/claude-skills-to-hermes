@@ -203,11 +203,24 @@ field the target has no place for. `--fix --strict` exits 0 once nothing needs
 a decision.
 `doctor --json` writes the same report as a document instead of coloured
 text — `profile`, `checked`, `clean`, `drift`, per-kind `counts`, and a
-`findings` list where each entry carries the `SKILL.md` to annotate — so CI can
-read it without parsing the human output. `--strict` keeps its exit code
-either way. `.github/scripts/annotate_doctor.py` does exactly that: it reads the
-document on stdin and prints one GitHub annotation per finding, an error for
-drift a command can fix and a warning for a copy that needs a decision.
+`findings` list — so CI can read it without parsing the human output. Each
+finding lists the files inside the copy that a fresh conversion would write
+differently (`changed`, `extra`, `missing`) with the first line that differs,
+so an annotation can point at the real change instead of the top of the file.
+`--strict` keeps its exit code either way.
+`skill-bridge annotate` turns that report into GitHub annotations: it runs the
+same check itself, or reads a document from `--report FILE` (`-` for stdin),
+and prints one `::error` (drift a command can fix) or `::warning` (edited or
+lossy, which `--fix` must not touch) per file, at the line that differs. It is
+part of the package, so a project that installs from pip needs no script of
+ours:
+
+```yaml
+      - name: Annotate drifted skills
+        run: |
+          skill-bridge doctor --json > doctor.json
+          skill-bridge annotate --report doctor.json
+```
 
 ## Reverse conversion
 
@@ -242,6 +255,7 @@ skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]]
 skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json]
+skill-bridge annotate [--report FILE|-] [--profile NAME] [-c PATH]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]
 skill-bridge batch <root> --all-agents | --to <format>

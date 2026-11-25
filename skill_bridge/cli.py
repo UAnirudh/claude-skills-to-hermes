@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from skill_bridge.adopt import AdoptReport, run_adopt
+from skill_bridge.annotations import annotations as annotation_lines
 from skill_bridge.agent_paths import (
     detect_installed_agents,
     global_skill_root,
@@ -790,6 +791,63 @@ def doctor_cmd(
 
     if strict and after.drift:
         raise SystemExit(1)
+
+
+@main.command("annotate")
+@click.option(
+    "--report",
+    default=None,
+    help="doctor --json document to read, '-' for stdin (default: run the check)",
+)
+@click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+)
+def annotate_cmd(
+    report: str | None, profile: str | None, config_path: Path | None
+) -> None:
+    """Print a GitHub annotation for each finding, for CI logs.
+
+    Reads a `doctor --json` document with --report (or '-' for stdin), or runs
+    the same check itself, and writes one workflow command per file that differs
+    inside a copy: an error for drift a command can fix, a warning for a copy
+    that needs a decision. Pointing at the file and line means a reviewer sees
+    the annotation where the change belongs instead of on line 1, and a clean
+    profile prints nothing at all.
+
+    A project that installs skill-bridge from pip can call this directly; it is
+    the same writer our own CI uses.
+    """
+    if report is not None:
+        try:
+            raw = (
+                sys.stdin.read()
+                if report == "-"
+                else Path(report).read_text(encoding="utf-8")
+            )
+            document = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise click.ClickException(f"not a doctor report: {exc}") from exc
+    else:
+        load_exporters()
+        try:
+            config = load_config(config_path)
+            prof = config.get_profile(profile)
+        except KeyError as exc:
+            message = str(exc.args[0]) if exc.args else str(exc)
+            console.print(f"[red]{message}[/red]")
+            raise SystemExit(1) from exc
+        except FileNotFoundError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise SystemExit(1) from exc
+        document = report_to_dict(diagnose(prof.targets), profile=prof.name)
+
+    for line in annotation_lines(document):
+        click.echo(line)
 
 
 @main.command("adopt")

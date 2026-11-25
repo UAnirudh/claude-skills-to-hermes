@@ -57,6 +57,8 @@ class Finding:
     target_format: AgentFormat
     skill_dir: Path
     detail: str
+    #: Files inside the copy that a fresh conversion writes differently.
+    files: list[FileDifference] = field(default_factory=list)
 
 
 @dataclass
@@ -97,26 +99,68 @@ def _snapshot(root: Path) -> dict[str, bytes] | None:
     return files
 
 
-def _describe_difference(expected: dict[str, bytes], actual: dict[str, bytes]) -> str:
-    changed = sorted(
-        name for name in set(expected) & set(actual) if expected[name] != actual[name]
-    )
-    extra = sorted(set(actual) - set(expected))
-    missing = sorted(set(expected) - set(actual))
+CHANGED = "changed"
+EXTRA = "extra"
+MISSING = "missing"
+
+
+@dataclass(frozen=True)
+class FileDifference:
+    """One file inside a copy that a fresh conversion would write differently."""
+
+    name: str
+    status: str
+    #: 1-based line of the first difference, in ``expected``'s terms.
+    line: int = 1
+
+
+def _first_differing_line(expected: bytes, actual: bytes) -> int:
+    """Where two versions of a text file first disagree.
+
+    Files are decoded leniently: a binary difference still yields a line rather
+    than an error, which is all an editor annotation needs.
+    """
+    left = expected.decode("utf-8", errors="replace").splitlines()
+    right = actual.decode("utf-8", errors="replace").splitlines()
+    for index, (was, now) in enumerate(zip(left, right)):
+        if was != now:
+            return index + 1
+    return min(len(left), len(right)) + 1
+
+
+def _compare_files(
+    expected: dict[str, bytes], actual: dict[str, bytes]
+) -> list[FileDifference]:
+    """Every file that differs, added or missing, in human-reading order."""
+    differences: list[FileDifference] = []
+    for name in sorted(set(expected) & set(actual)):
+        if expected[name] == actual[name]:
+            continue
+        differences.append(
+            FileDifference(
+                name, CHANGED, _first_differing_line(expected[name], actual[name])
+            )
+        )
+    for name in sorted(set(actual) - set(expected)):
+        differences.append(FileDifference(name, EXTRA))
+    for name in sorted(set(expected) - set(actual)):
+        differences.append(FileDifference(name, MISSING))
+    return differences
+
+
+def _describe_difference(differences: list[FileDifference]) -> str:
     parts: list[str] = []
-    if changed:
-        parts.append("changed " + ", ".join(changed))
-    if extra:
-        parts.append("extra " + ", ".join(extra))
-    if missing:
-        parts.append("missing " + ", ".join(missing))
+    for status in (CHANGED, EXTRA, MISSING):
+        names = [item.name for item in differences if item.status == status]
+        if names:
+            parts.append(f"{status} " + ", ".join(names))
     return "; ".join(parts) or "content differs"
 
 
 def _difference(
     skill_dir: Path, source: Path, target: AgentFormat
-) -> tuple[str, str] | None:
-    """Why ``skill_dir`` no longer matches its source, as (kind, detail).
+) -> tuple[str, str, list[FileDifference]] | None:
+    """Why ``skill_dir`` no longer matches its source, as (kind, detail, files).
 
     Markers written since fingerprints were added record the source as it was
     when the copy was made and the copy as it was written. A copy that fails
@@ -136,39 +180,50 @@ def _difference(
         copy_changed = bool(output_sha) and tree_hash(skill_dir) != output_sha
         source_changed = bool(source_sha) and tree_hash(source) != source_sha
     except OSError:
-        return EDITED, "copy cannot be read"
+        return EDITED, "copy cannot be read", []
+
+    if not (copy_changed or source_changed):
+        if source_sha and output_sha:
+            return None  # both fingerprints agree: nothing to re-convert
+        differences, problem = _reconverted_difference(skill_dir, source, target)
+        if problem is not None:
+            return EDITED, f"{problem}; no fingerprints to say which side changed", []
+        if not differences:
+            return None
+        return (
+            EDITED,
+            f"{_describe_difference(differences)}; "
+            "no fingerprints to say which side changed",
+            differences,
+        )
+
+    # Drift with fingerprints: the marker says *that* it drifted, and a fresh
+    # conversion is the only way to say which files inside the copy to point a
+    # reader at. Only copies already known to be wrong pay for it.
+    differences, _problem = _reconverted_difference(skill_dir, source, target)
     if copy_changed and source_changed:
-        return EDITED, "edited by hand and its source changed too"
+        return EDITED, "edited by hand and its source changed too", differences
     if copy_changed:
-        return EDITED, "edited by hand since it was written"
-    if source_changed:
-        return OUT_OF_SYNC, "source changed since this copy was converted"
-    if source_sha and output_sha:
-        return None  # both fingerprints agree: nothing to re-convert
-    difference = _reconverted_difference(skill_dir, source, target)
-    if difference is None:
-        return None
-    return EDITED, f"{difference}; no fingerprints to say which side changed"
+        return EDITED, "edited by hand since it was written", differences
+    return OUT_OF_SYNC, "source changed since this copy was converted", differences
 
 
 def _reconverted_difference(
     skill_dir: Path, source: Path, target: AgentFormat
-) -> str | None:
-    """Why ``skill_dir`` differs from converting ``source`` now, or None."""
+) -> tuple[list[FileDifference], str | None]:
+    """Files that differ from converting ``source`` now, and why if unknown."""
     scratch = Path(tempfile.mkdtemp(prefix="skill-bridge-doctor-"))
     try:
         fresh = convert_skill(source, target, scratch, validate=False)
         expected = _snapshot(fresh.output_dir)
     except (OSError, ValueError) as exc:
-        return f"could not re-convert the source ({exc})"
+        return [], f"could not re-convert the source ({exc})"
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     actual = _snapshot(skill_dir)
     if expected is None or actual is None:
-        return "copy cannot be read"
-    if expected == actual:
-        return None
-    return _describe_difference(expected, actual)
+        return [], "copy cannot be read"
+    return _compare_files(expected, actual), None
 
 
 def diagnose(locations: list[SkillLocation]) -> DoctorReport:
@@ -214,9 +269,9 @@ def diagnose(locations: list[SkillLocation]) -> DoctorReport:
 
             difference = _difference(skill_dir, source, loc.format)
             if difference is not None:
-                kind, detail = difference
+                kind, detail, files = difference
                 report.findings.append(
-                    Finding(kind, skill_dir.name, loc.format, skill_dir, detail)
+                    Finding(kind, skill_dir.name, loc.format, skill_dir, detail, files)
                 )
 
             try:
@@ -315,6 +370,15 @@ def report_to_dict(
                 "path": str(finding.skill_dir),
                 "file": str(Path(finding.skill_dir) / "SKILL.md"),
                 "detail": finding.detail,
+                "files": [
+                    {
+                        "name": item.name,
+                        "status": item.status,
+                        "line": item.line,
+                        "file": str(Path(finding.skill_dir) / item.name),
+                    }
+                    for item in finding.files
+                ],
             }
             for finding in report.findings
         ],

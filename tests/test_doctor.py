@@ -196,7 +196,24 @@ def test_doctor_trusts_the_fingerprints_instead_of_reconverting(tmp_path, monkey
     assert report.clean
 
 
-def test_doctor_spots_a_hand_edited_copy_without_reconverting(tmp_path, monkeypatch):
+def test_doctor_names_the_file_it_could_not_name_before(tmp_path):
+    """A copy that added a file reports that file, not just its SKILL.md."""
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    (target / "demo" / "NOTES.md").write_text("kept by hand\n", encoding="utf-8")
+
+    report = diagnose(hermes(target))
+
+    assert [finding.kind for finding in report.findings] == [EDITED]
+    differences = report.findings[0].files
+    assert [(item.name, item.status, item.line) for item in differences] == [
+        ("NOTES.md", "extra", 1)
+    ]
+
+
+def test_doctor_spots_a_hand_edited_copy_and_names_the_line(tmp_path):
     source, target = tmp_path / "src", tmp_path / "tgt"
     write_skill(source, "demo")
     config = write_config(tmp_path, source, target)
@@ -206,15 +223,18 @@ def test_doctor_spots_a_hand_edited_copy_without_reconverting(tmp_path, monkeypa
         copy.read_text(encoding="utf-8") + "\n<!-- edited by hand -->\n",
         encoding="utf-8",
     )
-    forbid_conversion(monkeypatch)
-
     report = diagnose(hermes(target))
 
     assert [finding.kind for finding in report.findings] == [EDITED]
     assert report.findings[0].detail == "edited by hand since it was written"
+    differences = report.findings[0].files
+    assert [item.name for item in differences] == ["SKILL.md"]
+    assert differences[0].status == "changed"
+    # The appended comment is past the converted file, so not line 1.
+    assert differences[0].line > 1
 
 
-def test_doctor_spots_an_edited_source_without_reconverting(tmp_path, monkeypatch):
+def test_doctor_spots_an_edited_source_and_names_the_line(tmp_path):
     source, target = tmp_path / "src", tmp_path / "tgt"
     write_skill(source, "demo")
     config = write_config(tmp_path, source, target)
@@ -223,12 +243,14 @@ def test_doctor_spots_an_edited_source_without_reconverting(tmp_path, monkeypatc
     skill.write_text(
         skill.read_text(encoding="utf-8") + "\n## Added later\n", encoding="utf-8"
     )
-    forbid_conversion(monkeypatch)
-
     report = diagnose(hermes(target))
 
     assert [finding.kind for finding in report.findings] == [OUT_OF_SYNC]
     assert report.findings[0].detail == "source changed since this copy was converted"
+    differences = report.findings[0].files
+    assert [item.name for item in differences] == ["SKILL.md"]
+    assert differences[0].status == "changed"
+    assert differences[0].line > 1
 
 
 def test_doctor_reconverts_a_marker_without_fingerprints(tmp_path):
@@ -407,7 +429,15 @@ def test_json_output_carries_the_findings_and_the_strict_exit_code(tmp_path):
     behind = next(
         finding for finding in payload["findings"] if finding["skill"] == "behind"
     )
-    assert set(behind) == {"kind", "skill", "target", "path", "file", "detail"}
+    assert set(behind) == {
+        "kind",
+        "skill",
+        "target",
+        "path",
+        "file",
+        "detail",
+        "files",
+    }
     assert behind["target"] == "hermes"
     assert behind["path"] == str(target / "behind")
     assert behind["file"] == str(target / "behind" / "SKILL.md")

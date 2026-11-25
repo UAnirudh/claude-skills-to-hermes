@@ -51,7 +51,7 @@ jobs:
           fi
           report="${RUNNER_TEMP:-.}/doctor.json"
           skill-bridge doctor --json > "$report"
-          python .github/scripts/annotate_doctor.py < "$report"
+          skill-bridge annotate --report "$report"
 
       - name: Smoke test CLI
         shell: bash
@@ -198,9 +198,10 @@ jobs:
             exit 1
           }
 
-      # The annotator is the piece a project's CI calls: prove it turns the
-      # report into the annotations, that drift is an error, that a hand-edited
-      # copy is only a warning, and that a clean profile emits nothing.
+      # `annotate` is what a project's CI calls: prove it points at the line that
+      # differs, that drift is an error, that a hand-edited copy is only a
+      # warning, that a piped report gives the same answers as a live check, and
+      # that a clean profile emits nothing.
       - name: Smoke test doctor annotations
         shell: bash
         run: |
@@ -210,27 +211,36 @@ jobs:
           printf -- '---\nname: demo\ndescription: Skill for the annotation smoke test.\n---\n\n# Demo\n' \
             > "$work/.claude/skills/demo/SKILL.md"
           cd "$work"
-          script="../.github/scripts/annotate_doctor.py"
           skill-bridge install --harness hermes --scope project
           # A copy behind its source is drift a command can fix, so it is an
-          # error aimed at that copy's SKILL.md and nothing else.
+          # error aimed at the SKILL.md line that differs, never line 1.
           printf -- '\n## Later\n' >> ".claude/skills/demo/SKILL.md"
-          skill-bridge doctor --json > report.json
-          python "$script" < report.json > annotations.txt
-          grep -q '^::error file=.*[\\/][.]hermes[\\/]skills[\\/]demo[\\/]SKILL[.]md,line=1::demo (hermes): source changed since this copy was converted$' \
+          skill-bridge annotate > annotations.txt
+          grep -Eq '^::error file=.*[\\/][.]hermes[\\/]skills[\\/]demo[\\/]SKILL[.]md,line=[0-9]+::demo \(hermes\): source changed since this copy was converted$' \
             annotations.txt
+          if grep -q 'SKILL[.]md,line=1::' annotations.txt; then
+            echo "the annotation fell back to line 1"
+            cat annotations.txt
+            exit 1
+          fi
           test "$(grep -c '^::' annotations.txt)" -eq 1 || {
             echo "expected exactly one out-of-sync annotation"
             cat annotations.txt
             exit 1
           }
+          # A document read from a file, and one piped on stdin, must give the
+          # same annotations: that is how a pip-installed project consumes this.
+          skill-bridge doctor --json > report.json
+          skill-bridge annotate --report report.json > from-file.txt
+          skill-bridge doctor --json | skill-bridge annotate --report - > from-stdin.txt
+          diff from-file.txt annotations.txt
+          diff from-stdin.txt annotations.txt
           # A copy edited by hand must never be overwritten by --fix, so it
           # warns rather than failing the annotation contract.
           skill-bridge sync
           printf -- '\n<!-- hand written -->\n' >> ".hermes/skills/demo/SKILL.md"
-          skill-bridge doctor --json > report.json
-          python "$script" < report.json > annotations.txt
-          grep -q '^::warning file=.*[\\/][.]hermes[\\/]skills[\\/]demo[\\/]SKILL[.]md,line=1::demo (hermes): edited by hand since it was written$' \
+          skill-bridge annotate > annotations.txt
+          grep -Eq '^::warning file=.*[\\/][.]hermes[\\/]skills[\\/]demo[\\/]SKILL[.]md,line=[0-9]+::demo \(hermes\): edited by hand since it was written$' \
             annotations.txt
           test "$(grep -c '^::' annotations.txt)" -eq 1 || {
             echo "expected exactly one edited annotation"
@@ -239,8 +249,7 @@ jobs:
           }
           # Nothing to report means no annotations at all, not a bare summary.
           skill-bridge sync
-          skill-bridge doctor --json > report.json
-          python "$script" < report.json > annotations.txt
+          skill-bridge annotate > annotations.txt
           test ! -s annotations.txt || {
             echo "a clean profile produced annotations"
             cat annotations.txt
