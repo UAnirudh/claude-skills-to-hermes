@@ -201,6 +201,11 @@ as `Edited by hand` and left for you; an explicit `sync` is the way to
 regenerate one. Lossy findings stay too, since no conversion can restore a
 field the target has no place for. `--fix --strict` exits 0 once nothing needs
 a decision.
+`doctor --json` writes the same report as a document instead of coloured
+text — `profile`, `checked`, `clean`, `drift`, per-kind `counts`, and a
+`findings` list where each entry carries the `SKILL.md` to annotate — so CI can
+read it without parsing the human output. `--strict` keeps its exit code
+either way.
 
 ## Reverse conversion
 
@@ -234,7 +239,7 @@ skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]]
-skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix]
+skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]
 skill-bridge batch <root> --all-agents | --to <format>

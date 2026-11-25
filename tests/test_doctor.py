@@ -365,6 +365,98 @@ def test_fix_leaves_lossy_findings_alone(tmp_path):
     assert "Lossy fields" in result.output
 
 
+def test_json_output_carries_the_findings_and_the_strict_exit_code(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "behind")
+    write_skill(source, "edited", frontmatter="model: opus\n")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    behind_source = source / "behind" / "SKILL.md"
+    behind_source.write_text(
+        behind_source.read_text(encoding="utf-8") + "\n## Added later\n",
+        encoding="utf-8",
+    )
+    edited_copy = target / "edited" / "SKILL.md"
+    edited_copy.write_text(
+        edited_copy.read_text(encoding="utf-8") + "\n<!-- hand written -->\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        main, ["doctor", "--config", str(config), "--json", "--strict"]
+    )
+
+    assert result.exit_code == 1, result.output
+    # stdout is the document and nothing else, so CI can parse it directly.
+    payload = json.loads(result.output)
+    assert payload["profile"] == "test"
+    assert payload["checked"] == 2
+    assert payload["clean"] is False
+    assert payload["drift"] == 2
+    assert payload["counts"] == {
+        "stale": 0,
+        "out-of-sync": 1,
+        "edited": 1,
+        "lossy": 1,
+    }
+    assert {finding["kind"] for finding in payload["findings"]} == {
+        "out-of-sync",
+        "edited",
+        "lossy",
+    }
+    behind = next(
+        finding for finding in payload["findings"] if finding["skill"] == "behind"
+    )
+    assert set(behind) == {"kind", "skill", "target", "path", "file", "detail"}
+    assert behind["target"] == "hermes"
+    assert behind["path"] == str(target / "behind")
+    assert behind["file"] == str(target / "behind" / "SKILL.md")
+    assert behind["detail"] == "source changed since this copy was converted"
+
+
+def test_json_output_on_a_clean_profile_is_a_single_document(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "demo")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+
+    result = CliRunner().invoke(
+        main, ["doctor", "--config", str(config), "--json", "--strict"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["clean"] is True
+    assert payload["drift"] == 0
+    assert payload["checked"] == 1
+    assert payload["findings"] == []
+    assert "fixed" not in payload
+
+
+def test_json_with_fix_reports_what_the_repair_did(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "tgt"
+    write_skill(source, "gone")
+    config = write_config(tmp_path, source, target)
+    run_sync(config_path=config)
+    shutil.rmtree(source / "gone")
+
+    result = CliRunner().invoke(
+        main, ["doctor", "--config", str(config), "--json", "--fix", "--strict"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["fixed"] == {
+        "stale": 1,
+        "out_of_sync": 0,
+        "conversions": 0,
+        "edited_left": 0,
+        "lossy_left": 0,
+    }
+    assert payload["clean"] is True
+    assert not (target / "gone").exists()
+
+
 def test_fix_rewrites_nothing_when_the_profile_is_healthy(tmp_path):
     source, target = tmp_path / "src", tmp_path / "tgt"
     write_skill(source, "demo")

@@ -284,3 +284,47 @@ def repair(
         result.conversions += len(conversions)
     result.refreshed = len(behind)
     return result
+
+
+def report_to_dict(
+    report: DoctorReport,
+    *,
+    profile: str | None = None,
+    repair: RepairResult | None = None,
+) -> dict[str, object]:
+    """Machine-readable view of a report, for CI annotations.
+
+    Every finding carries the directory and the ``SKILL.md`` a CI system can
+    annotate, along with the kind that says whether a command can fix it.
+    ``fixed`` is present only when the caller actually repaired something.
+    """
+    payload: dict[str, object] = {
+        "profile": profile,
+        "checked": report.checked,
+        "clean": report.clean,
+        "drift": len(report.drift),
+        "counts": {
+            kind: len(report.of_kind(kind))
+            for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY)
+        },
+        "findings": [
+            {
+                "kind": finding.kind,
+                "skill": finding.skill_name,
+                "target": finding.target_format.value,
+                "path": str(finding.skill_dir),
+                "file": str(Path(finding.skill_dir) / "SKILL.md"),
+                "detail": finding.detail,
+            }
+            for finding in report.findings
+        ],
+    }
+    if repair is not None:
+        payload["fixed"] = {
+            "stale": repair.pruned,
+            "out_of_sync": repair.refreshed,
+            "conversions": repair.conversions,
+            "edited_left": repair.edited,
+            "lossy_left": repair.lossy,
+        }
+    return payload

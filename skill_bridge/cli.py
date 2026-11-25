@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections import Counter
@@ -40,6 +41,7 @@ from skill_bridge.doctor import (
     RepairResult,
     diagnose,
     repair,
+    report_to_dict,
 )
 from skill_bridge.formats.base import all_exporters, get_exporter, load_exporters
 from skill_bridge.models import AgentFormat
@@ -720,8 +722,13 @@ def uninstall_cmd(
 @click.option("-c", "--config", "config_path", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--strict", is_flag=True, help="Exit 1 when a copy is stale or out of sync")
 @click.option("--fix", is_flag=True, help="Sync out-of-sync copies and prune stale ones")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output for CI")
 def doctor_cmd(
-    profile: str | None, config_path: Path | None, strict: bool, fix: bool
+    profile: str | None,
+    config_path: Path | None,
+    strict: bool,
+    fix: bool,
+    as_json: bool,
 ) -> None:
     """Report stale, out-of-sync and lossy copies in one pass.
 
@@ -755,20 +762,33 @@ def doctor_cmd(
     else:
         locs = prof.sources or ([prof.source] if prof.source else [])
         source_label = ", ".join(f"{loc.format.value}:{loc.path}" for loc in locs)
-    console.print(f"[bold]Profile:[/bold] {prof.name}  [bold]sources:[/bold] {source_label}")
+    if not as_json:
+        console.print(
+            f"[bold]Profile:[/bold] {prof.name}  "
+            f"[bold]sources:[/bold] {source_label}"
+        )
 
     report = diagnose(prof.targets)
-    _print_doctor(report)
-
+    repair_result = None
+    after = report
     if fix and report.drift:
-        result = repair(report, profile_name=profile, config_path=config_path)
+        repair_result = repair(report, profile_name=profile, config_path=config_path)
         after = diagnose(prof.targets)
-        _print_repair(result, after)
-        if strict and after.drift:
-            raise SystemExit(1)
-        return
 
-    if strict and report.drift:
+    if as_json:
+        # Nothing but the document on stdout, so `| jq` and CI parsers work.
+        click.echo(
+            json.dumps(
+                report_to_dict(after, profile=prof.name, repair=repair_result),
+                indent=2,
+            )
+        )
+    else:
+        _print_doctor(report)
+        if repair_result is not None:
+            _print_repair(repair_result, after)
+
+    if strict and after.drift:
         raise SystemExit(1)
 
 
