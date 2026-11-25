@@ -95,6 +95,50 @@ jobs:
             exit 1
           fi
 
+      # Stale-copy cleanup: the copy whose source was deleted is pruned, but
+      # only after a dry run that changes nothing, and a hand-written skill in
+      # the same harness survives both prune and uninstall. Project scope keeps
+      # every path relative, so this runs the same on Linux, macOS and Windows.
+      - name: Smoke test prune and uninstall
+        shell: bash
+        run: |
+          work=".ci-prune"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/gone" "$work/.claude/skills/keep" \
+            "$work/.hermes/skills/handwritten"
+          printf -- '---\nname: gone\ndescription: Source deleted before the prune smoke test.\n---\n\n# Gone\n' \
+            > "$work/.claude/skills/gone/SKILL.md"
+          printf -- '---\nname: keep\ndescription: Source that stays for the prune smoke test.\n---\n\n# Keep\n' \
+            > "$work/.claude/skills/keep/SKILL.md"
+          # No .skill-bridge.json marker: this one belongs to the harness.
+          printf -- '---\nname: handwritten\ndescription: Authored in the target, so never ours to delete.\n---\n\n# Handwritten\n' \
+            > "$work/.hermes/skills/handwritten/SKILL.md"
+          cd "$work"
+          skill-bridge install --harness hermes --scope project
+          test -f ".hermes/skills/gone/SKILL.md"
+          test -f ".hermes/skills/keep/SKILL.md"
+          rm -rf ".claude/skills/gone"
+          # The dry run names the orphan and must leave it on disk.
+          skill-bridge sync --prune --dry-run > dry-run.txt
+          test -d ".hermes/skills/gone" || { echo "dry run removed a skill"; exit 1; }
+          grep -q "Would prune 1 skill" dry-run.txt
+          skill-bridge sync --prune > prune.txt
+          test ! -d ".hermes/skills/gone" || { echo "orphan survived prune"; exit 1; }
+          grep -q "Pruned 1 skill" prune.txt
+          # A copy whose source still exists, and the hand-written skill, stay.
+          test -f ".hermes/skills/keep/SKILL.md"
+          test -f ".hermes/skills/handwritten/SKILL.md"
+          # --dry-run is only meaningful together with --prune.
+          if skill-bridge sync --dry-run 2>/dev/null; then
+            echo "sync --dry-run without --prune was accepted"
+            exit 1
+          fi
+          # uninstall clears the generated copy and still spares the native one.
+          skill-bridge uninstall --harness hermes --scope project > uninstall.txt
+          test ! -d ".hermes/skills/keep" || { echo "uninstall kept a generated copy"; exit 1; }
+          test -f ".hermes/skills/handwritten/SKILL.md"
+          grep -q "Removed 1 skill" uninstall.txt
+
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.
       - name: Smoke test install profile and sync
