@@ -149,7 +149,10 @@ def test_the_annotation_matches_what_doctor_actually_reports(tmp_path):
 
     payload = report_to_dict(diagnose(profile.targets), profile="test")
 
+    # The path goes through the property escaping, which matters on Windows:
+    # ``C:\...`` becomes ``C%3A\...`` before GitHub sees it.
+    escaped = annotate.escape_property(str(target / "demo" / "SKILL.md"))
     assert annotate.annotations(payload) == [
-        f"::error file={target / 'demo' / 'SKILL.md'},line=1::"
+        f"::error file={escaped},line=1::"
         "demo (hermes): source changed since this copy was converted"
     ]
