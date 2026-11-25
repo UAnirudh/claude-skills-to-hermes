@@ -88,6 +88,7 @@ Safety rules that make automatic import safe to re-run:
 
 * a skill your harness authored itself is **never** overwritten without `--force`;
 * skills converted earlier are refreshed (not duplicated);
+* each conversion is staged in a temporary directory beside the skills folder and renamed into place, so an interrupted or concurrent sync can never leave a half-written skill behind;
 * a copy whose source was deleted or renamed can be removed with `sync --prune` (or `uninstall`), and a skill your harness wrote itself is never deleted;
 * when several harnesses store skills in the same folder (`.agents/skills` is shared by Codex, Cursor, Gemini CLI, Copilot, OpenCode, Cline, Amp, Zed, Kilo Code, Warp), the destination folder is never treated as a source;
 * duplicate skill names across harnesses are imported once.
