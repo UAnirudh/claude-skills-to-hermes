@@ -487,6 +487,38 @@ jobs:
           PY
           echo "outdated smoke test passed"
 
+      # `diff` is the review step before a sync: it has to show the exact lines
+      # that would change, including the hand-written text a sync would
+      # overwrite, and it must not write to the copy while doing it.
+      - name: Smoke test diff
+        shell: bash
+        run: |
+          work=".ci-diff"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the diff smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          skill-bridge install --harness hermes --scope project
+          skill-bridge diff > clean.txt
+          grep -q 'sync would change nothing' clean.txt
+          printf -- '\n## Later\n' >> ".claude/skills/demo/SKILL.md"
+          skill-bridge diff > drift.txt
+          grep -q '^+## Later$' drift.txt
+          grep -q '^--- a/SKILL.md$' drift.txt
+          grep -q '^+++ b/SKILL.md$' drift.txt
+          grep -q '^@@ ' drift.txt
+          if grep -q '## Later' ".hermes/skills/demo/SKILL.md"; then
+            echo "diff wrote to the copy it was inspecting"
+            exit 1
+          fi
+          # A hand edit is the text a sync would overwrite, so it is a removal.
+          skill-bridge sync
+          printf -- '\n<!-- hand written -->\n' >> ".hermes/skills/demo/SKILL.md"
+          skill-bridge diff > edited.txt
+          grep -q '^-<!-- hand written -->$' edited.txt
+          echo "diff smoke test passed"
+
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.
       - name: Smoke test install profile and sync

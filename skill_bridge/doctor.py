@@ -38,6 +38,7 @@ from skill_bridge.provenance import (
     is_bridge_generated,
     package_version,
     read_marker,
+    tree_files,
     tree_hash,
 )
 from skill_bridge.prune import recorded_source, source_disappeared
@@ -104,15 +105,7 @@ class DoctorReport:
 
 def _snapshot(root: Path) -> dict[str, bytes] | None:
     """Every file under ``root`` except the provenance marker, or None."""
-    files: dict[str, bytes] = {}
-    try:
-        for entry in sorted(root.rglob("*")):
-            if entry.is_dir() or entry.name == MARKER_FILENAME:
-                continue
-            files[entry.relative_to(root).as_posix()] = entry.read_bytes()
-    except OSError:
-        return None
-    return files
+    return tree_files(root)
 
 
 CHANGED = "changed"

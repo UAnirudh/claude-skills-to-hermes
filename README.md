@@ -265,6 +265,34 @@ repository:
           category: skill-bridge
 ```
 
+`skill-bridge diff` answers the same question line by line: it converts each
+source into a temporary directory and diffs the result against the installed
+copy, so you can see exactly what a `sync` would add, change or remove —
+including the hand-written text it would overwrite in a copy that was edited.
+Nothing is written, copies whose source is gone are left out (`sync --prune` is
+the answer for those), and the exit code is always 0: this is a view, and
+`doctor --strict` is the check.
+
+```console
+$ skill-bridge diff --skill demo
+demo (hermes)  .hermes/skills/demo
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -12,6 +12,10 @@
+ 
+ Body paragraph.
+ 
++## Added later
++
++More text.
++
+ ## When to Use
+ 
+ Use this skill when the task matches the description in the frontmatter or when
+
+1 file(s) in 1 copy(ies) would change. sync applies them.
+```
+
 ## Reverse conversion
 
 Pull skills from any harness into another:
@@ -300,6 +328,7 @@ skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]] [--lock-
 skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json [--schema]] [--lock-timeout S]
 skill-bridge accept [--profile NAME] [-c PATH] [--skill NAME] [--lock-timeout S]
 skill-bridge annotate [--report FILE|-] [--format github|sarif] [--profile NAME] [-c PATH]
+skill-bridge diff [--skill NAME] [--profile NAME] [-c PATH]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]
 skill-bridge batch <root> --all-agents | --to <format>

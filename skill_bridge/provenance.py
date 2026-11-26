@@ -69,6 +69,25 @@ def tree_hash(root: Path) -> str:
     return digest.hexdigest()
 
 
+def tree_files(root: Path) -> dict[str, bytes] | None:
+    """Every file under ``root`` except the marker, by relative path, or None.
+
+    The marker is skipped for the same reason `tree_hash` skips it: it records
+    fingerprints and a timestamp, so it is never part of what a copy says. None
+    means the tree could not be read, which callers treat as "cannot compare"
+    rather than "empty".
+    """
+    files: dict[str, bytes] = {}
+    try:
+        for entry in sorted(Path(root).rglob("*")):
+            if entry.is_dir() or entry.name == MARKER_FILENAME:
+                continue
+            files[entry.relative_to(root).as_posix()] = entry.read_bytes()
+    except OSError:
+        return None
+    return files
+
+
 def _source_relative(skill_dir: Path, source_path: Path) -> str | None:
     """The source's path below the tree it shares with the copy, if it has one.
 

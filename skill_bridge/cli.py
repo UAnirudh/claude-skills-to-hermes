@@ -34,6 +34,7 @@ from skill_bridge.config import (
     update_auto_import_config,
 )
 from skill_bridge.converter import convert_batch, convert_skill
+from skill_bridge.diff import diff_profile, render as render_diff
 from skill_bridge.locking import DEFAULT_LOCK_WAIT, LockTimeout
 from skill_bridge.doctor import (
     EDITED,
@@ -169,6 +170,26 @@ def _print_doctor(report: DoctorReport) -> None:
         f"{stale} stale, {behind} out of sync, {outdated} outdated, "
         f"{edited} edited, {lossy} lossy"
     )
+
+
+def _print_diff(lines: list[str]) -> None:
+    """Colour a unified diff, leaving its text exactly as the file has it.
+
+    ``markup=False`` on purpose: a skill's own prose can contain square
+    brackets, and a diff is the one place where the text has to survive intact.
+    """
+    for line in lines:
+        if line.startswith(("--- ", "+++ ")):
+            style = "bold"
+        elif line.startswith("@@"):
+            style = "cyan"
+        elif line.startswith("+"):
+            style = "green"
+        elif line.startswith("-"):
+            style = "red"
+        else:
+            style = None
+        console.print(line, style=style, markup=False, highlight=False)
 
 
 def _print_repair(result: RepairResult, after: DoctorReport) -> None:
@@ -993,6 +1014,55 @@ def annotate_cmd(
         return
     for line in annotation_lines(document):
         click.echo(line)
+
+
+@main.command("diff")
+@click.option("--skill", "skill_name", default=None, help="Only this skill")
+@click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+)
+def diff_cmd(
+    skill_name: str | None, profile: str | None, config_path: Path | None
+) -> None:
+    """Show what a sync would change, without writing anything.
+
+    Converts each source into a temporary directory and diffs the result against
+    the copy that is installed, so a reviewer sees the exact lines a sync would
+    add, change or remove — including the hand-written text it would overwrite
+    in a copy that was edited. Copies whose source is gone are left out, since
+    `sync --prune` is the answer for those, and the exit code is always 0: this
+    is a view, and `doctor --strict` is the check.
+    """
+    load_exporters()
+    try:
+        config = load_config(config_path)
+        prof = config.get_profile(profile)
+    except KeyError as exc:
+        message = str(exc.args[0]) if exc.args else str(exc)
+        console.print(f"[red]{message}[/red]")
+        raise SystemExit(1) from exc
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1) from exc
+
+    report = diff_profile(prof.targets, skill_name=skill_name)
+    for problem in report.problems:
+        console.print(f"{WARN} {problem}")
+    if not report.diffs:
+        console.print(
+            f"{OK} {report.checked} copy(ies) checked, sync would change nothing."
+        )
+        return
+    _print_diff(render_diff(report))
+    console.print(
+        f"\n[bold]{report.files} file(s) in {len(report.diffs)} copy(ies) "
+        "would change.[/bold] sync applies them."
+    )
 
 
 @main.command("adopt")
