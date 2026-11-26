@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -281,13 +282,73 @@ def _reconverted_difference(
     return _compare_files(expected, actual), None
 
 
-def diagnose(locations: list[SkillLocation]) -> DoctorReport:
+@dataclass
+class _Copy:
+    """One generated copy, with everything needed to report on it.
+
+    Collected first and reported second, so the re-conversions — the expensive
+    part of a check — can run together while the findings still come out in the
+    order the copies were found.
+    """
+
+    skill_dir: Path
+    target: AgentFormat
+    source: Path | None = None
+    #: Why the copy is stale, or None when its source is still there.
+    stale: str | None = None
+    difference: tuple[str, str, list[FileDifference]] | None = None
+    lossy: list[Finding] = field(default_factory=list)
+
+
+#: How many re-conversions to run at once by default. The work is Python, so
+#: going far past the core count buys overhead rather than time.
+DEFAULT_WORKERS = 4
+
+
+def _worker_count(workers: int | None, jobs: int) -> int:
+    """Conversions to run at once: never more than the work, never zero."""
+    limit = DEFAULT_WORKERS if workers is None else workers
+    return max(1, min(limit, jobs))
+
+
+def _differences(
+    copies: list[_Copy], workers: int | None
+) -> list[tuple[str, str, list[FileDifference]] | None]:
+    """Re-convert each copy's source, several at a time when there are several.
+
+    Every conversion writes into its own temporary directory and only reads the
+    source, so they do not interfere. ``map`` returns the results in input
+    order, which is what keeps the report stable whichever way it ran.
+    """
+    if not copies:
+        return []
+    jobs = [
+        (copy.skill_dir, copy.source, copy.target)
+        for copy in copies
+        if copy.source is not None
+    ]
+    limit = _worker_count(workers, len(jobs))
+    if limit == 1:
+        return [_difference(*job) for job in jobs]
+    with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="skill-bridge") as pool:
+        return list(pool.map(lambda job: _difference(*job), jobs))
+
+
+def diagnose(
+    locations: list[SkillLocation], *, workers: int | None = None
+) -> DoctorReport:
     """Check every generated copy under ``locations``.
 
     The copies themselves are never written to; the one thing this removes is
     a staging holder a killed conversion left behind days ago.
+
+    A copy that is behind costs one conversion to say which files differ, and
+    that work does not depend on any other copy, so it runs in parallel —
+    ``workers`` caps how many at once. Findings are assembled afterwards in the
+    order the copies were found, so the report does not depend on scheduling.
     """
     report = DoctorReport()
+    copies: list[_Copy] = []
     seen_roots: set[str] = set()
     seen_dirs: set[str] = set()
 
@@ -311,48 +372,83 @@ def diagnose(locations: list[SkillLocation]) -> DoctorReport:
             seen_dirs.add(real)
             report.checked += 1
 
+            copy = _Copy(skill_dir, loc.format)
             reason = source_disappeared(skill_dir)
             if reason is not None:
-                report.findings.append(
-                    Finding(STALE, skill_dir.name, loc.format, skill_dir, reason)
-                )
+                copy.stale = reason
+                copies.append(copy)
                 continue  # no source left to compare or measure loss against
 
             source = recorded_source(skill_dir)
             if source is None:
                 continue  # no absolute source path: cannot prove anything
-
-            difference = _difference(skill_dir, source, loc.format)
-            if difference is not None:
-                kind, detail, files = difference
-                report.findings.append(
-                    Finding(kind, skill_dir.name, loc.format, skill_dir, detail, files)
-                )
-            else:
-                # Only a copy with nothing else wrong is worth a version note:
-                # when it already needs a sync, that finding is the one to act
-                # on, and a second line about the same copy is noise.
-                stale_version = _outdated(skill_dir)
-                if stale_version is not None:
-                    report.findings.append(
-                        Finding(
-                            OUTDATED,
-                            skill_dir.name,
-                            loc.format,
-                            skill_dir,
-                            stale_version,
-                        )
-                    )
+            copy.source = source
 
             try:
                 bundle = load_skill(source)
             except (OSError, ValueError):
-                continue
-            lost = lossy_fields(bundle.frontmatter, loc.format)
-            if lost:
-                report.findings.append(
-                    Finding(LOSSY, skill_dir.name, loc.format, skill_dir, ", ".join(lost))
+                bundle = None
+            if bundle is not None:
+                lost = lossy_fields(bundle.frontmatter, loc.format)
+                if lost:
+                    copy.lossy.append(
+                        Finding(
+                            LOSSY,
+                            skill_dir.name,
+                            loc.format,
+                            skill_dir,
+                            ", ".join(lost),
+                        )
+                    )
+            copies.append(copy)
+
+    # The conversions are the expensive part, and none needs another's answer,
+    # so they run together; the findings are then emitted in the order the
+    # copies were found, exactly as a serial check would have done.
+    behind = [copy for copy in copies if copy.source is not None]
+    for copy, difference in zip(behind, _differences(behind, workers)):
+        copy.difference = difference
+
+    for copy in copies:
+        if copy.stale is not None:
+            report.findings.append(
+                Finding(
+                    STALE,
+                    copy.skill_dir.name,
+                    copy.target,
+                    copy.skill_dir,
+                    copy.stale,
                 )
+            )
+            continue
+        if copy.difference is not None:
+            kind, detail, files = copy.difference
+            report.findings.append(
+                Finding(
+                    kind,
+                    copy.skill_dir.name,
+                    copy.target,
+                    copy.skill_dir,
+                    detail,
+                    files,
+                )
+            )
+        else:
+            # Only a copy with nothing else wrong is worth a version note: when
+            # it already needs a sync, that finding is the one to act on, and a
+            # second line about the same copy is noise.
+            stale_version = _outdated(copy.skill_dir)
+            if stale_version is not None:
+                report.findings.append(
+                    Finding(
+                        OUTDATED,
+                        copy.skill_dir.name,
+                        copy.target,
+                        copy.skill_dir,
+                        stale_version,
+                    )
+                )
+        report.findings.extend(copy.lossy)
     return report
 
 

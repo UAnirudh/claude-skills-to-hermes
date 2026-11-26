@@ -211,6 +211,12 @@ so the warning stops and a later source change is reported as a decision instead
 of being refreshed over your text (`--skill NAME` limits it to one copy). Lossy findings stay too, since no conversion can restore a
 field the target has no place for. `--fix --strict` exits 0 once nothing needs
 a decision.
+Saying which files inside a behind copy differ means converting its source
+again, which is the expensive half of a check. Those conversions do not depend
+on one another, so they run a few at a time rather than one copy after another,
+and the report is assembled afterwards in the order the copies were found — the
+same findings, the same order, whichever way it ran.
+
 A copy whose marker records an older skill-bridge than the one running is
 `outdated`: a converter fix since then has not reached it. Its contents can
 still be exactly what its source says — a fix may change nothing for that one
@@ -270,8 +276,10 @@ source into a temporary directory and diffs the result against the installed
 copy, so you can see exactly what a `sync` would add, change or remove —
 including the hand-written text it would overwrite in a copy that was edited.
 Nothing is written, copies whose source is gone are left out (`sync --prune` is
-the answer for those), and the exit code is always 0: this is a view, and
-`doctor --strict` is the check.
+the answer for those), and the exit code is 0: this is a view, and
+`doctor --strict` is the check. The one exception is a `--skill` name that
+matches no copy — a typo, not a clean profile — which exits 1 and says so
+instead of printing "nothing to change".
 
 ```console
 $ skill-bridge diff --skill demo

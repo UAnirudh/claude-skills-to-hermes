@@ -502,6 +502,12 @@ jobs:
           skill-bridge install --harness hermes --scope project
           skill-bridge diff > clean.txt
           grep -q 'sync would change nothing' clean.txt
+          # A --skill name that matches no copy is a typo, not a clean profile.
+          if skill-bridge diff --skill nope > missing.txt 2>&1; then
+            echo "an unmatched --skill name exited 0"
+            exit 1
+          fi
+          grep -q "no generated copy named 'nope'" missing.txt
           printf -- '\n## Later\n' >> ".claude/skills/demo/SKILL.md"
           skill-bridge diff > drift.txt
           grep -q '^+## Later$' drift.txt
@@ -518,6 +524,41 @@ jobs:
           skill-bridge diff > edited.txt
           grep -q '^-<!-- hand written -->$' edited.txt
           echo "diff smoke test passed"
+
+      # doctor re-converts drifted copies together rather than one after another;
+      # the report still has to name every one of them, with its files and lines.
+      - name: Smoke test doctor over several copies
+        shell: bash
+        run: |
+          work=".ci-parallel"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills"
+          for name in alpha bravo charlie; do
+            mkdir -p "$work/.claude/skills/$name"
+            printf -- "---\nname: $name\ndescription: Skill $name for the parallel smoke test.\n---\n\n# $name\n" \
+              > "$work/.claude/skills/$name/SKILL.md"
+          done
+          cd "$work"
+          skill-bridge install --harness hermes --scope project
+          for name in alpha bravo charlie; do
+            printf -- "\n## $name later\n" >> ".claude/skills/$name/SKILL.md"
+          done
+          skill-bridge doctor --json > report.json
+          python - <<'PY'
+          import json
+
+          with open("report.json", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          kinds = [item["kind"] for item in payload["findings"]]
+          assert kinds == ["out-of-sync"] * 3, kinds
+          names = sorted(item["skill"] for item in payload["findings"])
+          assert names == ["alpha", "bravo", "charlie"], names
+          for item in payload["findings"]:
+              assert item["files"], item
+              assert item["files"][0]["line"] > 1, item
+          print("parallel doctor report ok")
+          PY
+          echo "parallel doctor smoke test passed"
 
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.

@@ -161,6 +161,26 @@ def test_the_skill_option_limits_the_diff(tmp_path):
     assert "+## Later" in noisy.output
 
 
+def test_a_skill_name_that_matches_no_copy_is_said_out_loud(tmp_path):
+    config, _ = synced(tmp_path)
+
+    result = diff(config, "--skill", "nope")
+
+    assert result.exit_code == 1
+    assert "no generated copy named 'nope'" in result.output
+    # "nothing to change" would read as a clean profile rather than a typo.
+    assert "sync would change nothing" not in result.output
+
+
+def test_a_named_skill_that_is_clean_still_exits_zero(tmp_path):
+    config, _ = synced(tmp_path)
+
+    result = diff(config, "--skill", "demo")
+
+    assert result.exit_code == 0, result.output
+    assert "1 copy(ies) checked, sync would change nothing." in result.output
+
+
 def test_a_file_without_a_trailing_newline_is_marked(tmp_path):
     config, copy = synced(tmp_path)
     copy.write_bytes(copy.read_bytes() + b"\n<!-- mine -->")

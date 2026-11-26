@@ -1035,8 +1035,10 @@ def diff_cmd(
     the copy that is installed, so a reviewer sees the exact lines a sync would
     add, change or remove — including the hand-written text it would overwrite
     in a copy that was edited. Copies whose source is gone are left out, since
-    `sync --prune` is the answer for those, and the exit code is always 0: this
-    is a view, and `doctor --strict` is the check.
+    `sync --prune` is the answer for those, and the exit code is 0: this is a
+    view, and `doctor --strict` is the check. The one exception is a --skill
+    name that matches no copy: that is a typo, not a clean profile, so it exits
+    1 and says so.
     """
     load_exporters()
     try:
@@ -1054,6 +1056,13 @@ def diff_cmd(
     for problem in report.problems:
         console.print(f"{WARN} {problem}")
     if not report.diffs:
+        if skill_name is not None and report.checked == 0:
+            # "nothing to change" would read as a clean result for a name that
+            # simply is not there, which is the one thing this must not do.
+            console.print(
+                f"{WARN} no generated copy named '{skill_name}' in this profile."
+            )
+            raise SystemExit(1)
         console.print(
             f"{OK} {report.checked} copy(ies) checked, sync would change nothing."
         )
