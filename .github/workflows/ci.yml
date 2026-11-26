@@ -362,6 +362,66 @@ jobs:
           }
           echo "annotations smoke test passed"
 
+      # `annotate --format sarif` is what feeds GitHub code scanning: prove the
+      # log parses, that drift a command can fix is an error at the line that
+      # differs, that a hand-edited copy is only a warning, and that a clean
+      # profile still uploads an empty but valid log.
+      - name: Smoke test SARIF output
+        shell: bash
+        run: |
+          work=".ci-sarif"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the SARIF smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          skill-bridge install --harness hermes --scope project
+          printf -- '\n## Later\n' >> ".claude/skills/demo/SKILL.md"
+          skill-bridge annotate --format sarif > drift.sarif
+          python - <<'PY'
+          import json
+
+          with open("drift.sarif", encoding="utf-8") as handle:
+              log = json.load(handle)
+          assert log["version"] == "2.1.0", log["version"]
+          run = log["runs"][0]
+          assert run["tool"]["driver"]["name"] == "skill-bridge"
+          assert run["results"], "no results for a drifted copy"
+          result = run["results"][0]
+          assert result["level"] == "error", result
+          assert result["ruleId"] == "skill-bridge/out-of-sync", result["ruleId"]
+          region = result["locations"][0]["physicalLocation"]["region"]
+          assert region["startLine"] > 1, region
+          print("sarif drift log ok")
+          PY
+          # A copy edited by hand must never be overwritten by --fix, so its
+          # alert is a warning rather than a failing check.
+          skill-bridge sync
+          printf -- '\n<!-- hand written -->\n' >> ".hermes/skills/demo/SKILL.md"
+          skill-bridge annotate --format sarif > edited.sarif
+          python - <<'PY'
+          import json
+
+          with open("edited.sarif", encoding="utf-8") as handle:
+              results = json.load(handle)["runs"][0]["results"]
+          assert len(results) == 1, results
+          assert results[0]["level"] == "warning", results[0]
+          assert results[0]["ruleId"] == "skill-bridge/edited", results[0]
+          print("sarif edited log ok")
+          PY
+          skill-bridge sync
+          skill-bridge annotate --format sarif > clean.sarif
+          python - <<'PY'
+          import json
+
+          with open("clean.sarif", encoding="utf-8") as handle:
+              run = json.load(handle)["runs"][0]
+          assert run["results"] == [], run["results"]
+          assert run["tool"]["driver"]["name"] == "skill-bridge"
+          print("sarif clean log ok")
+          PY
+          echo "sarif smoke test passed"
+
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.
       - name: Smoke test install profile and sync

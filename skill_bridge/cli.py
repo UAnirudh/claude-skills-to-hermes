@@ -15,6 +15,7 @@ from rich.table import Table
 
 from skill_bridge.adopt import AdoptReport, run_adopt
 from skill_bridge.annotations import annotations as annotation_lines
+from skill_bridge.annotations import sarif as sarif_log
 from skill_bridge.agent_paths import (
     detect_installed_agents,
     global_skill_root,
@@ -905,6 +906,14 @@ def accept_cmd(
     default=None,
     help="doctor --json document to read, '-' for stdin (default: run the check)",
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["github", "sarif"]),
+    default="github",
+    show_default=True,
+    help="github: workflow commands for CI logs; sarif: a SARIF 2.1.0 log",
+)
 @click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
 @click.option(
     "-c",
@@ -914,9 +923,12 @@ def accept_cmd(
     default=None,
 )
 def annotate_cmd(
-    report: str | None, profile: str | None, config_path: Path | None
+    report: str | None,
+    output_format: str,
+    profile: str | None,
+    config_path: Path | None,
 ) -> None:
-    """Print a GitHub annotation for each finding, for CI logs.
+    """Publish each finding to CI, as GitHub annotations or a SARIF log.
 
     Reads a `doctor --json` document with --report (or '-' for stdin), or runs
     the same check itself, and writes one workflow command per file that differs
@@ -924,6 +936,10 @@ def annotate_cmd(
     that needs a decision. Pointing at the file and line means a reviewer sees
     the annotation where the change belongs instead of on line 1, and a clean
     profile prints nothing at all.
+
+    `--format sarif` writes the same findings as a SARIF 2.1.0 log for GitHub
+    code scanning instead, one rule per kind and one result per file, so drift
+    becomes an alert on the pull request and in the Security tab.
 
     A project that installs skill-bridge from pip can call this directly; it is
     the same writer our own CI uses.
@@ -952,6 +968,9 @@ def annotate_cmd(
             raise SystemExit(1) from exc
         document = report_to_dict(diagnose(prof.targets), profile=prof.name)
 
+    if output_format == "sarif":
+        click.echo(json.dumps(sarif_log(document), indent=2))
+        return
     for line in annotation_lines(document):
         click.echo(line)
 

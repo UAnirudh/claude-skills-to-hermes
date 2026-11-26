@@ -237,6 +237,27 @@ ours:
           skill-bridge annotate --report doctor.json
 ```
 
+`--format sarif` writes the same findings as a SARIF 2.1.0 log instead, which
+GitHub code scanning reads, so drift becomes an alert on the pull request and in
+the Security tab rather than a line buried in the log. Each kind is its own rule
+(`skill-bridge/out-of-sync`, `skill-bridge/edited`, …), drift a command can fix
+is an `error` and a copy that needs a decision is a `warning`, and the location
+is the file and the line that differs. Paths inside the working directory are
+written relative, which is how code scanning matches a result to a file in the
+repository:
+
+```yaml
+      - name: Check skill drift
+        run: |
+          skill-bridge doctor --json > doctor.json
+          skill-bridge annotate --report doctor.json --format sarif > skill-bridge.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: skill-bridge.sarif
+          category: skill-bridge
+```
+
 ## Reverse conversion
 
 Pull skills from any harness into another:
@@ -271,7 +292,7 @@ skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]] [--lock-timeout S]
 skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json [--schema]] [--lock-timeout S]
 skill-bridge accept [--profile NAME] [-c PATH] [--skill NAME] [--lock-timeout S]
-skill-bridge annotate [--report FILE|-] [--profile NAME] [-c PATH]
+skill-bridge annotate [--report FILE|-] [--format github|sarif] [--profile NAME] [-c PATH]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
 skill-bridge watch [--profile NAME] [--debounce 1.0]
 skill-bridge batch <root> --all-agents | --to <format>
