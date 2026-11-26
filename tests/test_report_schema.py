@@ -22,6 +22,7 @@ from skill_bridge.doctor import (
     EXTRA,
     FileDifference,
     LOSSY,
+    OUTDATED,
     OUT_OF_SYNC,
     REPORT_VERSION,
     STALE,
@@ -120,6 +121,7 @@ def full_report() -> DoctorReport:
         (OUT_OF_SYNC, "stale"),
         (EDITED, "edited"),
         (LOSSY, "lossy"),
+        (OUTDATED, "outdated"),
     ):
         report.findings.append(
             Finding(
@@ -159,8 +161,11 @@ def test_the_schema_names_every_finding_kind():
     kinds = report_schema()["properties"]["findings"]["items"]["properties"]["kind"]
     counts = report_schema()["properties"]["counts"]
 
-    assert kinds["enum"] == [STALE, OUT_OF_SYNC, EDITED, LOSSY]
+    assert kinds["enum"] == [STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED]
+    # `outdated` arrived after version 1 was published, so it is described but
+    # not required: a document written before it still has to validate.
     assert counts["required"] == [STALE, OUT_OF_SYNC, EDITED, LOSSY]
+    assert counts["properties"][OUTDATED] == {"type": "integer", "minimum": 0}
 
 
 def test_schema_needs_no_profile_and_prints_only_json(tmp_path, monkeypatch):

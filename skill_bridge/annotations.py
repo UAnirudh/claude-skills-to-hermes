@@ -41,6 +41,7 @@ RULE_TITLES = {
     "out-of-sync": "copy of a skill that is behind its source",
     "edited": "copy of a skill that was edited by hand",
     "lossy": "copy of a skill that lost fields in conversion",
+    "outdated": "copy of a skill converted by an older skill-bridge",
 }
 
 

@@ -422,6 +422,71 @@ jobs:
           PY
           echo "sarif smoke test passed"
 
+      # A copy written by an older skill-bridge can be byte-identical to what its
+      # source says, so `outdated` is information rather than drift: it must not
+      # fail --strict, --fix must leave it alone, and sync must clear it by
+      # recording the version that actually wrote the copy.
+      - name: Smoke test the outdated finding
+        shell: bash
+        run: |
+          work=".ci-outdated"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the outdated smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          skill-bridge install --harness hermes --scope project
+          python - <<'PY'
+          import json
+          from importlib.metadata import version
+
+          current = version("skill-bridge")
+          assert int(current.split(".")[0]) >= 1, current
+          path = ".hermes/skills/demo/.skill-bridge.json"
+          with open(path, encoding="utf-8") as handle:
+              marker = json.load(handle)
+          marker["version"] = "0.0.1"
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(marker, handle, indent=2)
+          print("marker rewritten to 0.0.1")
+          PY
+          skill-bridge doctor --strict > doctor.txt
+          grep -q 'Converted by an older skill-bridge' doctor.txt
+          skill-bridge doctor --json > report.json
+          python - <<'PY'
+          import json
+
+          with open("report.json", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          kinds = [item["kind"] for item in payload["findings"]]
+          assert kinds == ["outdated"], kinds
+          assert payload["counts"]["outdated"] == 1, payload["counts"]
+          assert payload["drift"] == 0, payload["drift"]
+          print("outdated finding ok")
+          PY
+          # --fix repairs drift, not a copy that is already right.
+          skill-bridge doctor --fix --json > report.json
+          python - <<'PY'
+          import json
+
+          with open("report.json", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          assert payload["counts"]["outdated"] == 1, payload["counts"]
+          print("--fix left the copy alone")
+          PY
+          skill-bridge sync
+          skill-bridge doctor --json > report.json
+          python - <<'PY'
+          import json
+
+          with open("report.json", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          assert payload["counts"]["outdated"] == 0, payload["counts"]
+          assert payload["clean"] is True, payload
+          print("sync cleared the outdated finding")
+          PY
+          echo "outdated smoke test passed"
+
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.
       - name: Smoke test install profile and sync

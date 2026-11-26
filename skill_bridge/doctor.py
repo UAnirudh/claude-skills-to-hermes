@@ -5,10 +5,15 @@ Three questions a user actually asks about their installed skills:
 * is this copy still backed by a source (otherwise ``sync --prune`` removes it);
 * does it still match what converting that source produces *now* (otherwise
   ``sync`` rewrites it);
-* did the conversion lose frontmatter the target harness cannot express.
+* did the conversion lose frontmatter the target harness cannot express;
+* was the copy written by the skill-bridge that is running now, or has a
+  converter fix since then never reached it.
 
 The first two are drift and can be fixed by a command; the third is a property
-of the format pair, so it is reported but never treated as drift. Everything
+of the format pair, so it is reported but never treated as drift. A copy whose
+marker records an older skill-bridge than the one running is ``outdated``: its
+contents can still be exactly what the source says, so it is information rather
+than drift, and ``sync`` — not ``--fix`` — is what re-converts it. Everything
 here is read-only: ``doctor`` re-converts into a temporary directory only to
 compare, and never touches the copies or the sources.
 """
@@ -31,6 +36,7 @@ from skill_bridge.provenance import (
     MARKER_FILENAME,
     bless_marker,
     is_bridge_generated,
+    package_version,
     read_marker,
     tree_hash,
 )
@@ -41,6 +47,8 @@ STALE = "stale"
 OUT_OF_SYNC = "out-of-sync"
 EDITED = "edited"
 LOSSY = "lossy"
+#: Written by a different, older skill-bridge than the one running.
+OUTDATED = "outdated"
 
 #: Version of the `doctor --json` document. Bumped whenever a consumer could
 #: notice a change: a field removed or renamed, a type changed, a new required
@@ -220,6 +228,48 @@ def _difference(
     return OUT_OF_SYNC, "source changed since this copy was converted", differences
 
 
+def _version_key(value: str) -> tuple[int, ...] | None:
+    """Comparable parts of a version string, or None when it is not one.
+
+    Only the leading number of each dot-separated piece counts, so ``1.4.0rc1``
+    reads as 1.4.0, and trailing zeros are dropped so ``1.4`` and ``1.4.0`` are
+    the same version rather than an upgrade.
+    """
+    parts: list[int] = []
+    for piece in str(value).split("."):
+        digits = ""
+        for char in piece:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            return None
+        parts.append(int(digits))
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def _outdated(skill_dir: Path) -> str | None:
+    """Why this copy was written by an older skill-bridge, if it was.
+
+    The marker records the version that wrote the copy. Both sides are read the
+    way ``write_marker`` writes them, so a checkout whose installed metadata
+    lags its source still compares a copy against the version that would have
+    written it. A version that cannot be read as a number is not evidence of
+    anything, and a copy from a *newer* skill-bridge is a downgrade rather than
+    an outdated copy, so neither is reported.
+    """
+    recorded = read_marker(skill_dir).get("version")
+    if not recorded:
+        return None
+    current = package_version()
+    old, new = _version_key(str(recorded)), _version_key(current)
+    if old is None or new is None or old >= new:
+        return None
+    return f"converted by skill-bridge {recorded}, running {current}"
+
+
 def _reconverted_difference(
     skill_dir: Path, source: Path, target: AgentFormat
 ) -> tuple[list[FileDifference], str | None]:
@@ -285,6 +335,21 @@ def diagnose(locations: list[SkillLocation]) -> DoctorReport:
                 report.findings.append(
                     Finding(kind, skill_dir.name, loc.format, skill_dir, detail, files)
                 )
+            else:
+                # Only a copy with nothing else wrong is worth a version note:
+                # when it already needs a sync, that finding is the one to act
+                # on, and a second line about the same copy is noise.
+                stale_version = _outdated(skill_dir)
+                if stale_version is not None:
+                    report.findings.append(
+                        Finding(
+                            OUTDATED,
+                            skill_dir.name,
+                            loc.format,
+                            skill_dir,
+                            stale_version,
+                        )
+                    )
 
             try:
                 bundle = load_skill(source)
@@ -425,9 +490,13 @@ def report_schema() -> dict[str, object]:
             "counts": {
                 "type": "object",
                 "additionalProperties": False,
+                # `outdated` came after version 1 was published, so it is
+                # optional here: a document written before it still validates,
+                # and a consumer that has never heard of it can ignore the key.
                 "required": [STALE, OUT_OF_SYNC, EDITED, LOSSY],
                 "properties": {
-                    kind: count for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY)
+                    kind: count
+                    for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
                 },
             },
             "findings": {
@@ -445,7 +514,9 @@ def report_schema() -> dict[str, object]:
                         "files",
                     ],
                     "properties": {
-                        "kind": {"enum": [STALE, OUT_OF_SYNC, EDITED, LOSSY]},
+                        "kind": {
+                            "enum": [STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED]
+                        },
                         "skill": {"type": "string"},
                         "target": {"type": "string"},
                         "path": {"type": "string"},
@@ -512,7 +583,7 @@ def report_to_dict(
         "drift": len(report.drift),
         "counts": {
             kind: len(report.of_kind(kind))
-            for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY)
+            for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
         },
         "findings": [
             {

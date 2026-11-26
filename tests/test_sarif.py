@@ -22,6 +22,7 @@ LEVELS = {
     "out-of-sync": "error",
     "edited": "warning",
     "lossy": "warning",
+    "outdated": "warning",
 }
 
 

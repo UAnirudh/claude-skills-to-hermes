@@ -211,6 +211,13 @@ so the warning stops and a later source change is reported as a decision instead
 of being refreshed over your text (`--skill NAME` limits it to one copy). Lossy findings stay too, since no conversion can restore a
 field the target has no place for. `--fix --strict` exits 0 once nothing needs
 a decision.
+A copy whose marker records an older skill-bridge than the one running is
+`outdated`: a converter fix since then has not reached it. Its contents can
+still be exactly what its source says — a fix may change nothing for that one
+skill — so this is information, not drift. `--strict` stays green on it and
+`--fix` leaves it alone, because rewriting a copy that is already correct is
+not a repair; `sync` is the answer, since it re-converts the copy and records
+the version that did.
 `doctor --json` writes the same report as a document instead of coloured
 text — `profile`, `checked`, `clean`, `drift`, per-kind `counts`, and a
 `findings` list — so CI can read it without parsing the human output. Each

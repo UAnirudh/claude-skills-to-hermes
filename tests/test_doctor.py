@@ -420,6 +420,7 @@ def test_json_output_carries_the_findings_and_the_strict_exit_code(tmp_path):
         "out-of-sync": 1,
         "edited": 1,
         "lossy": 1,
+        "outdated": 0,
     }
     assert {finding["kind"] for finding in payload["findings"]} == {
         "out-of-sync",

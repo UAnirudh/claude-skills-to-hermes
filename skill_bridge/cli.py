@@ -38,6 +38,7 @@ from skill_bridge.locking import DEFAULT_LOCK_WAIT, LockTimeout
 from skill_bridge.doctor import (
     EDITED,
     LOSSY,
+    OUTDATED,
     OUT_OF_SYNC,
     STALE,
     DoctorReport,
@@ -129,6 +130,12 @@ def _print_removals(
 DOCTOR_SECTIONS = (
     (STALE, "Source gone", "skill-bridge sync --prune removes these", "red"),
     (OUT_OF_SYNC, "Out of sync", "--fix refreshes these from their source", "yellow"),
+    (
+        OUTDATED,
+        "Converted by an older skill-bridge",
+        "sync re-converts these",
+        "blue",
+    ),
     (EDITED, "Edited by hand", "--fix leaves these alone: sync would overwrite", "magenta"),
     (LOSSY, "Lossy fields", "kept in metadata.skill-bridge.extra", "cyan"),
 )
@@ -148,6 +155,7 @@ def _print_doctor(report: DoctorReport) -> None:
             )
     stale = len(report.of_kind(STALE))
     behind = len(report.of_kind(OUT_OF_SYNC))
+    outdated = len(report.of_kind(OUTDATED))
     edited = len(report.of_kind(EDITED))
     lossy = len(report.of_kind(LOSSY))
     console.print()
@@ -158,7 +166,8 @@ def _print_doctor(report: DoctorReport) -> None:
         return
     console.print(
         f"[bold]Checked {report.checked} generated copy(ies):[/bold] "
-        f"{stale} stale, {behind} out of sync, {edited} edited, {lossy} lossy"
+        f"{stale} stale, {behind} out of sync, {outdated} outdated, "
+        f"{edited} edited, {lossy} lossy"
     )
 
 
@@ -179,6 +188,11 @@ def _print_repair(result: RepairResult, after: DoctorReport) -> None:
         console.print(
             f"[dim]Left {result.lossy} lossy finding(s) alone: "
             "no conversion restores them.[/dim]"
+        )
+    if after.of_kind(OUTDATED):
+        console.print(
+            f"[dim]{len(after.of_kind(OUTDATED))} copy(ies) came from an older "
+            "skill-bridge; sync re-converts them.[/dim]"
         )
     if after.drift:
         console.print(
@@ -768,6 +782,12 @@ def doctor_cmd(
     frontmatter a target cannot express, which conversion parks in
     metadata.skill-bridge.extra: they are inherent to the format pair, so they
     are reported but never fail --strict.
+
+    A copy whose marker records an older skill-bridge than the one running is
+    `outdated`: a converter fix since then has not reached it, even though its
+    contents can be exactly what its source says. That makes it information
+    rather than drift, so --strict does not fail on it and --fix does not touch
+    it; `sync` is what re-converts the copy and records the running version.
 
     --fix applies the two repairable findings (through the same guarded paths
     as `sync --prune` and `sync`), then checks the profile again. Copies edited

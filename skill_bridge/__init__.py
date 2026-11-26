@@ -1,3 +1,3 @@
 """Skill Bridge — cross-agent skill format converter."""
 
-__version__ = "1.20.0"
+__version__ = "1.21.0"
