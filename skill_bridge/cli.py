@@ -44,6 +44,7 @@ from skill_bridge.doctor import (
     accept_edits,
     diagnose,
     repair,
+    report_schema,
     report_to_dict,
 )
 from skill_bridge.formats.base import all_exporters, get_exporter, load_exporters
@@ -737,6 +738,12 @@ def uninstall_cmd(
 @click.option("--fix", is_flag=True, help="Sync out-of-sync copies and prune stale ones")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output for CI")
 @click.option(
+    "--schema",
+    "show_schema",
+    is_flag=True,
+    help="Print the JSON Schema of the --json report and exit",
+)
+@click.option(
     "--lock-timeout",
     type=float,
     default=DEFAULT_LOCK_WAIT,
@@ -749,6 +756,7 @@ def doctor_cmd(
     strict: bool,
     fix: bool,
     as_json: bool,
+    show_schema: bool,
     lock_timeout: float,
 ) -> None:
     """Report stale, out-of-sync and lossy copies in one pass.
@@ -765,7 +773,16 @@ def doctor_cmd(
     after they were written are reported but never refreshed, and lossy
     findings are left alone because no conversion can restore a value the
     target format has no field for.
+
+    --schema prints the JSON Schema of the --json document and exits, without
+    reading a profile: it describes the format, so it has to work in a checkout
+    that has not installed anything yet. The report carries report-version, and
+    the schema is what that number refers to.
     """
+    if show_schema:
+        click.echo(json.dumps(report_schema(), indent=2))
+        return
+
     load_exporters()
     try:
         config = load_config(config_path)

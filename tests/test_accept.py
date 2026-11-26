@@ -67,6 +67,31 @@ def write_project(tmp_path: Path, *names: str) -> Path:
     return path
 
 
+def write_two_targets(tmp_path: Path, *names: str) -> Path:
+    """One profile, two harnesses, so a copy exists in each."""
+    source = tmp_path / "src"
+    for name in names or ("demo",):
+        (source / name).mkdir(parents=True)
+        (source / name / "SKILL.md").write_text(
+            SKILL.format(name=name), encoding="utf-8"
+        )
+    config = {
+        "default_profile": "test",
+        "profiles": {
+            "test": {
+                "source": {"format": "generic", "path": str(source)},
+                "targets": [
+                    {"format": "hermes", "path": str(tmp_path / "hermes")},
+                    {"format": "claude-code", "path": str(tmp_path / "claude")},
+                ],
+            }
+        },
+    }
+    path = tmp_path / "skill-bridge.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
 def targets_of(config: Path):
     return load_config(config).get_profile("test").targets
 
@@ -155,6 +180,37 @@ def test_a_later_source_change_is_reported_not_overwritten(tmp_path):
     # An explicit sync is still how the source's version wins.
     run_sync(config_path=config)
     assert "## Added later" in copy.read_text(encoding="utf-8")
+
+
+def test_accepting_blesses_edits_in_every_target(tmp_path):
+    """One profile can have several targets; each copy gets its own marker."""
+    config = write_two_targets(tmp_path)
+    run_sync(config_path=config)
+    copies = [
+        tmp_path / "hermes" / "demo" / "SKILL.md",
+        tmp_path / "claude" / "demo" / "SKILL.md",
+    ]
+    for copy in copies:
+        copy.write_text(
+            copy.read_text(encoding="utf-8") + "\n## Written by hand\n",
+            encoding="utf-8",
+        )
+    assert [finding.kind for finding in diagnose(targets_of(config)).findings] == [
+        EDITED,
+        EDITED,
+    ]
+
+    result = CliRunner().invoke(main, ["accept", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "Accepted 2 copy(ies)" in result.output
+    assert diagnose(targets_of(config)).findings == []
+    for copy in copies:
+        assert read_marker(copy.parent)["output-sha"] == tree_hash(copy.parent)
+        assert "## Written by hand" in copy.read_text(encoding="utf-8")
+    # Accepting one target does not reach into the other's marker.
+    assert read_marker(copies[0].parent)["target-format"] == "hermes"
+    assert read_marker(copies[1].parent)["target-format"] == "claude-code"
 
 
 def test_accepting_nothing_says_so(tmp_path):

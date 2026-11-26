@@ -42,6 +42,12 @@ OUT_OF_SYNC = "out-of-sync"
 EDITED = "edited"
 LOSSY = "lossy"
 
+#: Version of the `doctor --json` document. Bumped whenever a consumer could
+#: notice a change: a field removed or renamed, a type changed, a new required
+#: field. Adding an optional field does not need a bump, and neither does a
+#: change to the human output.
+REPORT_VERSION = 1
+
 #: Findings a command can fix without guessing what the user meant.
 FIXABLE_KINDS = (STALE, OUT_OF_SYNC)
 #: Findings that mean the installed copies are not what the sources say, and
@@ -388,6 +394,104 @@ def accept_edits(
     return result
 
 
+def report_schema() -> dict[str, object]:
+    """The JSON Schema of the document `doctor --json` writes.
+
+    Written out rather than derived, because its readers are other people's CI
+    scripts: a schema is documentation first and a validator second. The
+    contract is `report-version`; the tests keep the two in step.
+    """
+    count = {"type": "integer", "minimum": 0}
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": f"urn:skill-bridge:doctor-report:{REPORT_VERSION}",
+        "title": f"skill-bridge doctor report, version {REPORT_VERSION}",
+        "type": "object",
+        "required": [
+            "report-version",
+            "profile",
+            "checked",
+            "clean",
+            "drift",
+            "counts",
+            "findings",
+        ],
+        "properties": {
+            "report-version": {"const": REPORT_VERSION},
+            "profile": {"type": ["string", "null"]},
+            "checked": count,
+            "clean": {"type": "boolean"},
+            "drift": count,
+            "counts": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [STALE, OUT_OF_SYNC, EDITED, LOSSY],
+                "properties": {
+                    kind: count for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY)
+                },
+            },
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "kind",
+                        "skill",
+                        "target",
+                        "path",
+                        "file",
+                        "detail",
+                        "files",
+                    ],
+                    "properties": {
+                        "kind": {"enum": [STALE, OUT_OF_SYNC, EDITED, LOSSY]},
+                        "skill": {"type": "string"},
+                        "target": {"type": "string"},
+                        "path": {"type": "string"},
+                        "file": {"type": "string"},
+                        "detail": {"type": "string"},
+                        "files": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["name", "status", "line", "file"],
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "status": {
+                                        "enum": [CHANGED, EXTRA, MISSING]
+                                    },
+                                    "line": {"type": "integer", "minimum": 1},
+                                    "file": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            "fixed": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "stale",
+                    "out_of_sync",
+                    "conversions",
+                    "edited_left",
+                    "lossy_left",
+                ],
+                "properties": {
+                    "stale": count,
+                    "out_of_sync": count,
+                    "conversions": count,
+                    "edited_left": count,
+                    "lossy_left": count,
+                },
+            },
+        },
+    }
+
+
 def report_to_dict(
     report: DoctorReport,
     *,
@@ -401,6 +505,7 @@ def report_to_dict(
     ``fixed`` is present only when the caller actually repaired something.
     """
     payload: dict[str, object] = {
+        "report-version": REPORT_VERSION,
         "profile": profile,
         "checked": report.checked,
         "clean": report.clean,

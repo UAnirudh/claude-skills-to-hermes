@@ -198,6 +198,32 @@ jobs:
             exit 1
           }
 
+      # The report is a published format: it has to name its version, and the
+      # schema has to describe the document the command actually writes.
+      - name: Smoke test the report schema
+        shell: bash
+        run: |
+          work=".ci-schema"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the schema smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          skill-bridge doctor --schema > schema.json
+          skill-bridge install --harness hermes --scope project
+          skill-bridge doctor --json > report.json || true
+          python - <<'PY'
+          import json
+
+          schema = json.load(open("schema.json"))
+          report = json.load(open("report.json"))
+          version = schema["properties"]["report-version"]["const"]
+          assert report["report-version"] == version, (report["report-version"], version)
+          for key in schema["required"]:
+              assert key in report, f"report is missing {key}"
+          print("report schema smoke test passed, version", version)
+          PY
+
       # A hand edit has two answers: `sync` throws it away, `accept` keeps it.
       # This checks accept keeps the text, silences the warning, and does not
       # turn a later source change into a silent overwrite.

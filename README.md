@@ -217,7 +217,12 @@ text — `profile`, `checked`, `clean`, `drift`, per-kind `counts`, and a
 finding lists the files inside the copy that a fresh conversion would write
 differently (`changed`, `extra`, `missing`) with the first line that differs,
 so an annotation can point at the real change instead of the top of the file.
-`--strict` keeps its exit code either way.
+`--strict` keeps its exit code either way. The document starts with
+`report-version`, and `doctor --schema` prints the JSON Schema that number
+refers to — it needs no profile or config, since it describes the format rather
+than a project. Within a version the document only grows optional fields; a
+removed or renamed field, or a changed type, bumps the number, so a consumer can
+reject a shape it does not understand instead of misreading it.
 `skill-bridge annotate` turns that report into GitHub annotations: it runs the
 same check itself, or reads a document from `--report FILE` (`-` for stdin),
 and prints one `::error` (drift a command can fix) or `::warning` (edited or
@@ -264,7 +269,7 @@ skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]] [--lock-timeout S]
-skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json] [--lock-timeout S]
+skill-bridge doctor [--profile NAME] [-c PATH] [--strict] [--fix] [--json [--schema]] [--lock-timeout S]
 skill-bridge accept [--profile NAME] [-c PATH] [--skill NAME] [--lock-timeout S]
 skill-bridge annotate [--report FILE|-] [--profile NAME] [-c PATH]
 skill-bridge uninstall (--harness <fmt> | --all) [--scope ...] [--config PATH] [--stale-only] [--dry-run]
