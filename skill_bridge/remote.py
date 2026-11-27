@@ -201,10 +201,31 @@ class GitSource:
         return urlunsplit(parts._replace(netloc=f"{userinfo}@{parts.netloc}"))
 
 
+def _ref_slug(ref: str) -> str:
+    """A short, filesystem-safe piece of a ref name for a checkout folder.
+
+    Branches like `release/2024` have a slash in them, and a checkout whose
+    name cannot be read by a person is still a checkout nobody can find in the
+    cache.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", ref).strip("-.")
+    return cleaned[:24].strip("-.") or "ref"
+
+
 def checkout_dir(git: GitSource) -> Path:
-    """Where this repository is checked out, whether or not it exists yet."""
-    digest = hashlib.sha256(git.url.encode("utf-8")).hexdigest()[:10]
-    return cache_root() / GIT_DIR / f"{_slug(git.url)}-{digest}"
+    """Where this repository at this ref is checked out, whether or not it exists.
+
+    The ref is part of the identity, not just of the checkout. Two profiles can
+    read two refs of one repository, and a shared working tree would have them
+    overwrite each other on every run — while `watch`, which never fetches,
+    reads whichever of them happened to run last.
+    """
+    material = f"{git.url}\0{git.ref or ''}".encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()[:10]
+    name = _slug(git.url)
+    if git.ref:
+        name = f"{name}-{_ref_slug(git.ref)}"
+    return cache_root() / GIT_DIR / f"{name}-{digest}"
 
 
 def _credentials(git: GitSource) -> tuple[str, str] | None:

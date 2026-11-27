@@ -211,7 +211,11 @@ checked-in set of skills and every harness reads it from there:
 `https://host/repo#main` means the same as `git:` plus `ref: main`. The
 repository is cloned once into `~/.cache/skill-bridge/git` (moved by
 `SKILL_BRIDGE_CACHE_DIR`) and that checkout is kept apart from the conversion
-entries, so the size bound never evicts it. `sync` fetches the configured ref
+entries, so the size bound never evicts it. The checkout is keyed by the ref as
+well as the repository, so two profiles can read two refs of one repository
+without rewriting each other's files; changing a profile's `ref:` (or removing
+it, which reads the default branch) checks that ref out separately instead of
+reusing what another one left behind. `sync` fetches the configured ref
 before it reads, so a push reaches the harnesses on the next run; `watch` keeps
 reading the checkout it already has rather than fetching on every file event. A
 fetch that fails — a laptop offline, a remote that is down — keeps the last

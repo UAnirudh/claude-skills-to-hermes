@@ -32,7 +32,7 @@ from skill_bridge.config import (
 )
 from skill_bridge.models import AgentFormat
 from skill_bridge.remote import GitSource, RemoteError, checkout, checkout_dir
-from skill_bridge.sync import sync_profile
+from skill_bridge.sync import run_sync, sync_profile
 from skill_bridge.watch import watch_roots
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
@@ -218,6 +218,41 @@ def test_a_commit_ref_can_be_read(tmp_path):
     assert "Later work" not in read_skill(path)
 
 
+def test_two_refs_of_one_repository_are_two_checkouts(tmp_path):
+    repo = make_repo(tmp_path)
+    git(repo, "tag", "v1")
+    commit_change(repo, "Only on main.")
+    old = git_source(repo, ref="v1", subdir="skills")
+    new = git_source(repo, ref="main", subdir="skills")
+
+    assert checkout_dir(old) != checkout_dir(new)
+    assert "Read the diff." in read_skill(checkout(old))
+    assert "Only on main." in read_skill(checkout(new))
+
+
+def test_reading_one_ref_does_not_move_another(tmp_path):
+    repo = make_repo(tmp_path)
+    git(repo, "tag", "v1")
+    commit_change(repo, "Only on main.")
+    on_main = checkout(git_source(repo, ref="main", subdir="skills"))
+
+    checkout(git_source(repo, ref="v1", subdir="skills"))
+
+    # The other ref's working tree was never touched, so `watch` — which does
+    # not fetch — keeps reading what its own checkout holds.
+    assert "Only on main." in read_skill(on_main)
+
+
+def test_the_default_branch_and_a_named_ref_do_not_share_a_checkout(tmp_path):
+    repo = make_repo(tmp_path)
+    plain = git_source(repo, subdir="skills")
+    named = git_source(repo, ref="main", subdir="skills")
+
+    assert checkout_dir(plain) != checkout_dir(named)
+    assert checkout_dir(plain).name.startswith("skills-repo-")
+    assert "main" in checkout_dir(named).name
+
+
 def test_a_folder_that_is_not_there_names_the_repository(tmp_path):
     repo = make_repo(tmp_path)
     with pytest.raises(RemoteError, match="no directory 'skills/nope'"):
@@ -387,6 +422,57 @@ def test_sync_picks_up_a_change_pushed_to_the_repository(tmp_path):
     assert "Rewritten instructions." in (target / "code-review" / "SKILL.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_two_profiles_can_read_two_refs_of_one_repository(tmp_path):
+    repo = make_repo(tmp_path)
+    git(repo, "tag", "v1")
+    commit_change(repo, "Only on main.")
+    path = tmp_path / "skill-bridge.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "default_profile": "old",
+                "profiles": {
+                    "old": {
+                        "sources": [
+                            {
+                                "format": "claude-code",
+                                "git": str(repo),
+                                "ref": "v1",
+                                "path": "skills",
+                            }
+                        ],
+                        "targets": [
+                            {"format": "hermes", "path": str(tmp_path / "old")}
+                        ],
+                    },
+                    "new": {
+                        "sources": [
+                            {
+                                "format": "claude-code",
+                                "git": str(repo),
+                                "ref": "main",
+                                "path": "skills",
+                            }
+                        ],
+                        "targets": [
+                            {"format": "hermes", "path": str(tmp_path / "new")}
+                        ],
+                    },
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    run_sync("old", path)
+    run_sync("new", path)
+    run_sync("old", path)
+
+    assert "Read the diff." in read_skill(tmp_path / "old")
+    assert "Only on main." in read_skill(tmp_path / "new")
 
 
 def test_watch_roots_include_the_checkout(tmp_path):
