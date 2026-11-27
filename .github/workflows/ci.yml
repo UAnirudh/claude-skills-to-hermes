@@ -13,6 +13,9 @@ concurrency:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # A step that waits on a background process must not hold a runner for
+    # hours; the whole job is well under two minutes.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -578,7 +581,14 @@ jobs:
             sleep 0.5
           done
           kill "$watcher" 2>/dev/null || true
-          wait "$watcher" 2>/dev/null || true
+          # Never block on the watcher: `wait` can hang on Windows when the
+          # process outlives the signal, which held a runner until the job
+          # timeout. Poll briefly, then insist.
+          for _ in $(seq 1 10); do
+            kill -0 "$watcher" 2>/dev/null || break
+            sleep 0.5
+          done
+          kill -9 "$watcher" 2>/dev/null || true
           if ! grep -q '## Later' ".hermes/skills/demo/SKILL.md"; then
             cat watch.log
             echo "watch did not refresh the copy"
