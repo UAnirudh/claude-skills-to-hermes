@@ -150,6 +150,22 @@ def _run(args: list[str], *, cwd: Path | None = None) -> str:
     raise RemoteError(f"git {args[0]} failed: {detail}")
 
 
+def _rmtree(path: Path) -> None:
+    """Remove a checkout, including the read-only files git leaves on Windows.
+
+    `shutil.rmtree` alone stops at the first read-only object there, which is
+    every file in `.git/objects`, so a checkout that has to be replaced would
+    survive the attempt and fail the clone that follows.
+    """
+    for root, dirs, files in os.walk(path):
+        for name in dirs + files:
+            try:
+                os.chmod(Path(root) / name, 0o700)
+            except OSError:
+                pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def _has_commit(repo: Path, ref: str) -> bool:
     try:
         _run(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo)
@@ -193,7 +209,7 @@ def _clone(git: GitSource, dest: Path) -> None:
                 raise
     finally:
         if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+            _rmtree(staging)
 
 
 def _refresh(git: GitSource, dest: Path) -> None:
@@ -231,7 +247,7 @@ def checkout(git: GitSource, *, refresh: bool = False) -> Path:
         if dest.exists():
             # A clone killed halfway leaves a directory with no repository in
             # it; nothing in there is worth keeping and clone would refuse it.
-            shutil.rmtree(dest, ignore_errors=True)
+            _rmtree(dest)
         _clone(git, dest)
     elif refresh:
         try:

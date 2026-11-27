@@ -242,7 +242,10 @@ def test_an_unreachable_remote_keeps_the_last_checkout(tmp_path):
     repo = make_repo(tmp_path)
     source = git_source(repo, subdir="skills")
     first = checkout(source)
-    shutil.rmtree(repo)
+    # Moved rather than deleted: git leaves read-only files behind, and a
+    # rename reproduces the same thing (a URL that no longer resolves) without
+    # depending on the platform's permission rules.
+    repo.rename(tmp_path / "moved-away")
 
     with pytest.warns(RuntimeWarning, match="Using the checkout"):
         path = checkout(source, refresh=True)
