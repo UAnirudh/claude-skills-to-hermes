@@ -45,6 +45,8 @@ class SkillLocation:
                     data["git"],
                     ref=data.get("ref"),
                     subdir=data.get("path") or data.get("subdir"),
+                    token_env=data.get("token_env"),
+                    token_user=data.get("token_user"),
                 ),
             )
         scope = str(data.get("scope", "custom" if data.get("path") else "global"))
@@ -310,6 +312,12 @@ def config_to_dict(
                 d["ref"] = loc.git.ref
             if loc.git.subdir:
                 d["path"] = loc.git.subdir
+            # A variable's name, never its value: the secret stays in the
+            # environment the run was started with.
+            if loc.git.token_env:
+                d["token_env"] = loc.git.token_env
+            if loc.git.token_user:
+                d["token_user"] = loc.git.token_user
             return d
         if loc.scope != "global":
             d["scope"] = loc.scope

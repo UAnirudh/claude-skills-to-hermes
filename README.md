@@ -228,6 +228,24 @@ name, so `sync`, `fetch`, `doctor` and error messages never print it, and it is
 passed to git for one command instead of being copied into the clone's config
 in the cache.
 
+A token can also be named rather than written down, which keeps it out of the
+profile entirely:
+
+```yaml
+  team-repo:
+    sources:
+      - format: claude-code
+        git: https://github.com/acme/agent-skills.git
+        token_env: GITHUB_TOKEN   # read when the repository is fetched
+```
+
+The value is sent the way a token in the URL is — as the username, with an
+empty password — and `token_user:` names a different username for a host that
+wants one (GitLab's `oauth2`, Bitbucket's `x-token-auth`). The profile records
+only the variable's name, so committing it commits no secret; a run with the
+variable unset fails with a message naming it, rather than cloning anonymously
+and reporting a repository it could not find.
+
 `skill-bridge doctor` checks the whole profile in one read-only pass and groups
 what it finds: copies whose source is gone (`sync --prune` fixes those), copies
 that no longer match their source or were edited after being written (both

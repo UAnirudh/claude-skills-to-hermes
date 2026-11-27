@@ -105,17 +105,31 @@ class GitSource:
     #: and they stay out of its label, its repr and its cache key.
     username: str | None = field(default=None, repr=False, compare=False)
     password: str | None = field(default=None, repr=False, compare=False)
+    #: Name of the environment variable holding the token, so a profile never
+    #: contains the secret; and the username to send with it, for a host that
+    #: wants one (GitLab's `oauth2`, Bitbucket's `x-token-auth`).
+    token_env: str | None = None
+    token_user: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        """Hold the invariant on every construction path, not just `parse`."""
+        """Hold the invariants on every construction path, not just `parse`."""
+        if self.token_env is not None:
+            name = str(self.token_env).strip()
+            object.__setattr__(self, "token_env", name or None)
         clean, username, password = _split_credentials(self.url)
-        if username is None and password is None:
-            return
-        object.__setattr__(self, "url", clean)
-        if self.username is None:
-            object.__setattr__(self, "username", username)
-        if self.password is None:
-            object.__setattr__(self, "password", password)
+        if username is not None or password is not None:
+            object.__setattr__(self, "url", clean)
+            if self.username is None:
+                object.__setattr__(self, "username", username)
+            if self.password is None:
+                object.__setattr__(self, "password", password)
+        if self.token_env and (self.username is not None or self.password is not None):
+            raise RemoteError(
+                "A git source takes its credentials from the URL or from "
+                "token_env, not both"
+            )
+        if self.token_user is not None and not self.token_env:
+            raise RemoteError("token_user only makes sense beside token_env")
 
     @classmethod
     def parse(
@@ -124,12 +138,16 @@ class GitSource:
         *,
         ref: str | None = None,
         subdir: str | None = None,
+        token_env: str | None = None,
+        token_user: str | None = None,
     ) -> GitSource:
         """Read ``git:`` config, which is a URL, a ``#ref`` URL or a mapping."""
         if isinstance(value, dict):
             url = value.get("git") or value.get("url")
             ref = value.get("ref", ref)
             subdir = value.get("path", subdir) or value.get("subdir", subdir)
+            token_env = value.get("token_env", token_env)
+            token_user = value.get("token_user", token_user)
         else:
             url = value
         if url is None or not str(url).strip():
@@ -150,6 +168,8 @@ class GitSource:
             subdir=_subdir_path(subdir) if subdir else None,
             username=username,
             password=password,
+            token_env=token_env,
+            token_user=token_user,
         )
 
     @property
@@ -187,6 +207,32 @@ def checkout_dir(git: GitSource) -> Path:
     return cache_root() / GIT_DIR / f"{_slug(git.url)}-{digest}"
 
 
+def _credentials(git: GitSource) -> tuple[str, str] | None:
+    """The user and password to authenticate with, read when git runs.
+
+    A variable named by ``token_env`` is read here rather than when the config
+    is parsed, so the profile only ever names it and the value is whatever the
+    command's environment holds. A variable that is not set is an error, not
+    an anonymous attempt: the profile asked for a credential, and a clone that
+    quietly tried without one would fail with a message about the repository
+    instead of the variable.
+    """
+    if git.token_env:
+        token = os.environ.get(git.token_env)
+        if token is None or not token.strip():
+            raise RemoteError(
+                f"{git.label} reads its token from {git.token_env}, which is "
+                "not set. Export it, or use a credential helper instead"
+            )
+        if git.token_user is not None:
+            return git.token_user, token.strip()
+        # The same shape as a token in a URL: `https://<token>@host/repo`.
+        return token.strip(), ""
+    if git.username is None and git.password is None:
+        return None
+    return git.username or "", git.password or ""
+
+
 def _auth_env(git: GitSource) -> dict[str, str]:
     """Git config entries carrying ``git``'s credentials for one command.
 
@@ -196,9 +242,10 @@ def _auth_env(git: GitSource) -> dict[str, str]:
     to the repository's own origin, so a redirect or a submodule on another
     host never receives it, and it is not in argv, so `ps` does not show it.
     """
-    if git.username is None and git.password is None:
+    credentials = _credentials(git)
+    if credentials is None:
         return {}
-    secret = f"{git.username or ''}:{git.password or ''}".encode("utf-8")
+    secret = f"{credentials[0]}:{credentials[1]}".encode("utf-8")
     header = "AUTHORIZATION: basic " + base64.b64encode(secret).decode("ascii")
     parts = urlsplit(git.url)
     if parts.netloc:

@@ -573,7 +573,7 @@ def test_rewriting_a_config_keeps_the_credentials_in_the_file(tmp_path):
     assert loaded.git.username == "ghp_secretvalue"
 
 
-def serve_auth_repo(tmp_path):
+def serve_auth_repo(tmp_path, *, userinfo: str = "bot:tok3n"):
     """A dumb-HTTP git server that answers only with the right credentials."""
     repo = make_repo(tmp_path)
     served = tmp_path / "served"
@@ -587,7 +587,7 @@ def serve_auth_repo(tmp_path):
     subprocess.run(
         ["git", "update-server-info"], cwd=bare, check=True, capture_output=True
     )
-    expected = "basic " + base64.b64encode(b"bot:tok3n").decode("ascii")
+    expected = "basic " + base64.b64encode(userinfo.encode("utf-8")).decode("ascii")
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -644,3 +644,81 @@ def test_a_rejected_token_is_not_printed(tmp_path):
         server.server_close()
 
     assert "wrongtoken" not in str(caught.value)
+
+
+def test_a_token_can_be_read_from_the_environment(tmp_path, monkeypatch):
+    server, url = serve_auth_repo(tmp_path, userinfo="tok3n:")
+    monkeypatch.setenv("SKILLS_TOKEN", "tok3n")
+    try:
+        source = GitSource.parse(url, token_env="SKILLS_TOKEN")
+        path = checkout(source)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert read_skill(path / "skills")
+    store = (checkout_dir(source) / ".git" / "config").read_text(encoding="utf-8")
+    assert "tok3n" not in store
+
+
+def test_a_token_can_be_sent_with_a_username(tmp_path, monkeypatch):
+    server, url = serve_auth_repo(tmp_path, userinfo="bot:tok3n")
+    monkeypatch.setenv("SKILLS_TOKEN", "tok3n")
+    try:
+        source = GitSource.parse(url, token_env="SKILLS_TOKEN", token_user="bot")
+        path = checkout(source)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert read_skill(path / "skills")
+
+
+def test_an_unset_token_variable_is_named_in_the_error(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    monkeypatch.delenv("SKILLS_TOKEN", raising=False)
+
+    with pytest.raises(RemoteError) as caught:
+        checkout(GitSource.parse(str(repo), token_env="SKILLS_TOKEN"))
+
+    assert "SKILLS_TOKEN" in str(caught.value)
+    assert "not set" in str(caught.value)
+
+
+def test_a_token_cannot_come_from_the_url_and_the_environment():
+    with pytest.raises(RemoteError, match="not both"):
+        GitSource.parse(
+            "https://ghp_secretvalue@example.com/s.git", token_env="GITHUB_TOKEN"
+        )
+
+
+def test_a_token_user_needs_a_token_variable():
+    with pytest.raises(RemoteError, match="token_env"):
+        GitSource.parse("https://example.com/s.git", token_user="oauth2")
+
+
+def test_a_token_variable_round_trips_through_a_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secretvalue")
+    path = write_profile(
+        tmp_path,
+        sources=[
+            {
+                "format": "claude-code",
+                "git": "https://example.com/s.git",
+                "token_env": "GITHUB_TOKEN",
+                "token_user": "oauth2",
+            }
+        ],
+        targets=[{"format": "hermes", "path": str(tmp_path / "out")}],
+    )
+    loaded = load_config(path).profiles["default"].sources[0]
+
+    assert loaded.git is not None
+    assert (loaded.git.token_env, loaded.git.token_user) == ("GITHUB_TOKEN", "oauth2")
+    assert loaded.git.config_url == "https://example.com/s.git"
+
+    again = save_config(load_config(path), tmp_path / "again.yaml")
+    text = again.read_text(encoding="utf-8")
+    assert "token_env: GITHUB_TOKEN" in text
+    assert "token_user: oauth2" in text
+    assert "ghp_secretvalue" not in text
