@@ -303,7 +303,9 @@ def config_to_dict(
     def loc_dict(loc: SkillLocation) -> dict[str, Any]:
         d: dict[str, Any] = {"format": loc.format.value}
         if loc.git is not None:
-            d["git"] = loc.git.url
+            # The URL as the profile wrote it: credentials belong in the file
+            # the user controls, not in the source's name or its messages.
+            d["git"] = loc.git.config_url
             if loc.git.ref:
                 d["ref"] = loc.git.ref
             if loc.git.subdir:

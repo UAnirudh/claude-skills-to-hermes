@@ -12,11 +12,15 @@ because an offline laptop can still sync what it last saw.
 
 Nothing here guesses at credentials. Git is run with its terminal prompt
 disabled, so a private repository either works through the user's own ssh key
-or credential helper, or fails with a message saying so instead of hanging.
+or credential helper, or fails with a message saying so instead of hanging. A
+token written into the URL is lifted out of it when the source is parsed and
+handed to git as a header scoped to that repository, so it appears neither in
+a message that names the source nor in the checkout's own config.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import re
@@ -24,9 +28,10 @@ import shutil
 import subprocess
 import tempfile
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from skill_bridge.cache import GIT_DIR, cache_root
 
@@ -61,6 +66,33 @@ def _subdir_path(raw: str) -> str | None:
     return text
 
 
+#: Schemes whose userinfo is a credential. `ssh://git@host/repo` names the ssh
+#: user, which is part of where to connect rather than a secret to hide.
+_CREDENTIAL_SCHEMES = frozenset({"http", "https"})
+
+
+def _split_credentials(url: str) -> tuple[str, str | None, str | None]:
+    """``url`` without its userinfo, and that userinfo as user and password.
+
+    Git reads userinfo in an http(s) URL only to authenticate with it, but the
+    text also lands in whatever names the repository and in the clone's own
+    config. Taking it out here keeps it out of both: `_run` hands it back to
+    git for one command, scoped to this origin.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url, None, None
+    if parts.scheme.lower() not in _CREDENTIAL_SCHEMES or "@" not in parts.netloc:
+        return url, None, None
+    userinfo, _, host = parts.netloc.rpartition("@")
+    if not userinfo or not host:
+        return url, None, None
+    username, sep, password = userinfo.partition(":")
+    clean = urlunsplit(parts._replace(netloc=host))
+    return clean, unquote(username), unquote(password) if sep else ""
+
+
 @dataclass(frozen=True)
 class GitSource:
     """A repository, the ref to read from it and the folder inside it."""
@@ -68,6 +100,22 @@ class GitSource:
     url: str
     ref: str | None = None
     subdir: str | None = None
+    #: Credentials lifted out of the URL. They are not part of the source's
+    #: identity — two tokens to the same repository are the same checkout —
+    #: and they stay out of its label, its repr and its cache key.
+    username: str | None = field(default=None, repr=False, compare=False)
+    password: str | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """Hold the invariant on every construction path, not just `parse`."""
+        clean, username, password = _split_credentials(self.url)
+        if username is None and password is None:
+            return
+        object.__setattr__(self, "url", clean)
+        if self.username is None:
+            object.__setattr__(self, "username", username)
+        if self.password is None:
+            object.__setattr__(self, "password", password)
 
     @classmethod
     def parse(
@@ -95,17 +143,42 @@ class GitSource:
         if not text.strip():
             raise RemoteError(f"A git source needs a repository URL, not '{url}'")
         chosen = str(ref).strip() if ref else ""
+        clean, username, password = _split_credentials(text.strip())
         return cls(
-            url=text.strip(),
+            url=clean,
             ref=chosen or None,
             subdir=_subdir_path(subdir) if subdir else None,
+            username=username,
+            password=password,
         )
 
     @property
     def label(self) -> str:
-        """How the source is named in reports: repository, ref, folder."""
+        """How the source is named in reports: repository, ref, folder.
+
+        The URL here never contains credentials, so this is safe to print — and
+        every message, profile header and report goes through it.
+        """
         text = f"{self.url}#{self.ref}" if self.ref else self.url
         return f"{text} ({self.subdir})" if self.subdir else text
+
+    @property
+    def config_url(self) -> str:
+        """The URL as the profile wrote it, credentials included.
+
+        Only `save_config` uses this: rewriting a profile must not turn a
+        working private-repository source into one that cannot authenticate.
+        Nothing displays it, and it is never handed to a command line.
+        """
+        if self.username is None and self.password is None:
+            return self.url
+        userinfo = quote(self.username or "", safe="")
+        if self.password:
+            # `user@host` and `user:@host` mean the same to git; the first is
+            # what a token-only URL looked like before it was parsed.
+            userinfo += ":" + quote(self.password, safe="")
+        parts = urlsplit(self.url)
+        return urlunsplit(parts._replace(netloc=f"{userinfo}@{parts.netloc}"))
 
 
 def checkout_dir(git: GitSource) -> Path:
@@ -114,7 +187,38 @@ def checkout_dir(git: GitSource) -> Path:
     return cache_root() / GIT_DIR / f"{_slug(git.url)}-{digest}"
 
 
-def _run(args: list[str], *, cwd: Path | None = None) -> str:
+def _auth_env(git: GitSource) -> dict[str, str]:
+    """Git config entries carrying ``git``'s credentials for one command.
+
+    `git clone` copies a token in the URL into the checkout's own config, and
+    git echoes the URL in some of its errors; a config entry set through the
+    environment goes no further than the command it was set for. It is scoped
+    to the repository's own origin, so a redirect or a submodule on another
+    host never receives it, and it is not in argv, so `ps` does not show it.
+    """
+    if git.username is None and git.password is None:
+        return {}
+    secret = f"{git.username or ''}:{git.password or ''}".encode("utf-8")
+    header = "AUTHORIZATION: basic " + base64.b64encode(secret).decode("ascii")
+    parts = urlsplit(git.url)
+    if parts.netloc:
+        key = f"http.{parts.scheme}://{parts.netloc}/.extraheader"
+    else:
+        key = "http.extraheader"
+    try:
+        base = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        base = 0
+    return {
+        f"GIT_CONFIG_KEY_{base}": key,
+        f"GIT_CONFIG_VALUE_{base}": header,
+        "GIT_CONFIG_COUNT": str(base + 1),
+    }
+
+
+def _run(
+    args: list[str], *, cwd: Path | None = None, auth: GitSource | None = None
+) -> str:
     """Run one git command, turning every failure into a RemoteError."""
     if shutil.which("git") is None:
         raise RemoteError(
@@ -122,6 +226,8 @@ def _run(args: list[str], *, cwd: Path | None = None) -> str:
             "Install git, or point the profile at a local directory instead"
         )
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    if auth is not None:
+        env.update(_auth_env(auth))
     try:
         proc = subprocess.run(
             ["git", *args],
@@ -196,7 +302,7 @@ def _clone(git: GitSource, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{dest.name}-", dir=dest.parent))
     try:
-        _run(["clone", "--quiet", "--", git.url, str(staging)])
+        _run(["clone", "--quiet", "--", git.url, str(staging)], auth=git)
         if git.ref:
             _select(staging, git.ref)
         try:
@@ -214,7 +320,7 @@ def _clone(git: GitSource, dest: Path) -> None:
 
 def _refresh(git: GitSource, dest: Path) -> None:
     """Move the checkout to what the remote has now."""
-    _run(["fetch", "--quiet", "--tags", "--force", "origin"], cwd=dest)
+    _run(["fetch", "--quiet", "--tags", "--force", "origin"], cwd=dest, auth=git)
     if git.ref:
         _select(dest, git.ref)
     else:

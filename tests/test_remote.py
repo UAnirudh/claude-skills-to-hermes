@@ -8,8 +8,11 @@ the refresh, the failure messages and the whole sync that reads them.
 
 from __future__ import annotations
 
+import base64
 import shutil
 import subprocess
+import threading
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -462,3 +465,182 @@ def test_sync_reports_a_repository_it_cannot_read(tmp_path):
 
     assert result.exit_code == 1
     assert "git clone failed" in result.output
+
+
+# --- credentials -----------------------------------------------------------
+
+
+def test_a_token_in_the_url_is_not_part_of_the_source():
+    source = GitSource.parse("https://ghp_secretvalue@github.com/acme/skills.git")
+
+    assert source.url == "https://github.com/acme/skills.git"
+    assert (source.username, source.password) == ("ghp_secretvalue", "")
+    assert "ghp_secretvalue" not in source.label
+    assert "ghp_secretvalue" not in repr(source)
+
+
+def test_a_source_built_by_hand_also_hides_its_token():
+    source = GitSource("https://ghp_secretvalue@example.com/s.git")
+
+    assert source.url == "https://example.com/s.git"
+    assert source.username == "ghp_secretvalue"
+
+
+def test_a_user_and_password_are_lifted_out_of_the_url():
+    source = GitSource.parse("https://bot:tok3n@github.com/acme/skills.git#main")
+
+    assert (source.url, source.ref) == ("https://github.com/acme/skills.git", "main")
+    assert (source.username, source.password) == ("bot", "tok3n")
+    assert "tok3n" not in source.label
+
+
+def test_an_ssh_user_is_not_a_credential():
+    source = GitSource.parse("ssh://git@example.com/s.git")
+
+    assert source.url == "ssh://git@example.com/s.git"
+    assert (source.username, source.password) == (None, None)
+
+
+def test_a_source_without_credentials_is_unchanged():
+    source = GitSource.parse("https://github.com/acme/skills.git")
+
+    assert (source.username, source.password) == (None, None)
+    assert source.config_url == source.url
+
+
+def test_a_profile_header_does_not_name_a_token(tmp_path):
+    path = write_profile(
+        tmp_path,
+        sources=[
+            {
+                "format": "claude-code",
+                "git": "https://ghp_secretvalue@example.com/s.git",
+                "path": "skills",
+            }
+        ],
+        targets=[{"format": "hermes", "path": str(tmp_path / "out")}],
+    )
+
+    loc = load_config(path).profiles["default"].sources[0]
+
+    assert loc.git is not None
+    assert "ghp_secretvalue" not in loc.describe()
+    assert loc.describe() == "claude-code:https://example.com/s.git (skills)"
+
+
+def test_two_tokens_to_one_repository_are_one_source():
+    one = GitSource.parse("https://alice@example.com/s.git")
+    two = GitSource.parse("https://bob@example.com/s.git")
+
+    assert one == two
+    assert checkout_dir(one) == checkout_dir(two)
+    assert len(_dedupe_locations([
+        SkillLocation(format=AgentFormat.CLAUDE_CODE, path=Path("."), scope="remote", git=one),
+        SkillLocation(format=AgentFormat.CLAUDE_CODE, path=Path("."), scope="remote", git=two),
+    ])) == 1
+
+
+def test_rewriting_a_config_keeps_the_credentials_in_the_file(tmp_path):
+    profile = SyncProfile(
+        name="default",
+        sources=[
+            SkillLocation(
+                format=AgentFormat.CLAUDE_CODE,
+                path=Path("."),
+                scope="remote",
+                git=GitSource.parse("https://ghp_secretvalue@example.com/s.git", ref="main"),
+            )
+        ],
+        targets=[
+            SkillLocation(format=AgentFormat.HERMES, path=tmp_path / "out", scope="custom")
+        ],
+    )
+    path = save_config(
+        BridgeConfig(profiles={"default": profile}, default_profile="default"),
+        tmp_path / "skill-bridge.yaml",
+    )
+
+    written = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert (
+        written["profiles"]["default"]["sources"][0]["git"]
+        == "https://ghp_secretvalue@example.com/s.git"
+    )
+
+    loaded = load_config(path).profiles["default"].sources[0]
+
+    assert loaded.git is not None
+    assert loaded.git.url == "https://example.com/s.git"
+    assert loaded.git.username == "ghp_secretvalue"
+
+
+def serve_auth_repo(tmp_path):
+    """A dumb-HTTP git server that answers only with the right credentials."""
+    repo = make_repo(tmp_path)
+    served = tmp_path / "served"
+    bare = served / "repo.git"
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", "--quiet", "--bare", str(repo), str(bare)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "update-server-info"], cwd=bare, check=True, capture_output=True
+    )
+    expected = "basic " + base64.b64encode(b"bot:tok3n").decode("ascii")
+
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(served), **kwargs)
+
+        def _allowed(self) -> bool:
+            if self.headers.get("Authorization") == expected:
+                return True
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="skills"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
+
+        def do_GET(self):
+            if self._allowed():
+                super().do_GET()
+
+        def do_HEAD(self):
+            if self._allowed():
+                super().do_HEAD()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}/repo.git"
+
+
+def test_a_clone_authenticates_without_storing_the_token(tmp_path):
+    server, url = serve_auth_repo(tmp_path)
+    try:
+        source = GitSource.parse(url.replace("http://", "http://bot:tok3n@"))
+        path = checkout(source)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert read_skill(path / "skills")
+    store = (checkout_dir(source) / ".git" / "config").read_text(encoding="utf-8")
+    assert "tok3n" not in store
+    assert url in store
+
+
+def test_a_rejected_token_is_not_printed(tmp_path):
+    server, url = serve_auth_repo(tmp_path)
+    try:
+        source = GitSource.parse(url.replace("http://", "http://bot:wrongtoken@"))
+        with pytest.raises(RemoteError) as caught:
+            checkout(source)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert "wrongtoken" not in str(caught.value)

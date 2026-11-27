@@ -222,7 +222,11 @@ which is the copy a run reads (`--refresh` fetches current commits first).
 Git runs with terminal prompts disabled, so a private repository needs
 credentials git can use without asking: an ssh key, a credential helper, or a
 token in the URL (`https://<token>@github.com/...`). Without one the run fails
-with a message saying so instead of hanging on a password prompt.
+with a message saying so instead of hanging on a password prompt. A token in
+the URL is used only to authenticate: it is removed from the repository's
+name, so `sync`, `fetch`, `doctor` and error messages never print it, and it is
+passed to git for one command instead of being copied into the clone's config
+in the cache.
 
 `skill-bridge doctor` checks the whole profile in one read-only pass and groups
 what it finds: copies whose source is gone (`sync --prune` fixes those), copies
