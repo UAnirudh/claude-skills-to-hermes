@@ -1,11 +1,11 @@
-"""On-disk cache of the conversions `doctor` makes only to compare against.
+"""On-disk cache of the conversions `doctor` and `diff` make only to compare.
 
 Checking a copy that is behind means converting its source again and diffing
 the result, which is the expensive half of a pass. That conversion is
 deterministic: the same source, converted to the same target by the same code,
 writes the same bytes. So the result is kept here, and the next check reads it
 back instead of converting a second time — which is what makes a repeated
-`doctor` (or `doctor` followed by `annotate`) cheap.
+`doctor` (or `doctor` followed by `annotate` or `diff`) cheap.
 
 The key is the source's content, the target format and a digest of the
 converter's own code. The last one is why a converter fix invalidates the
@@ -26,12 +26,15 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 import uuid
 from functools import lru_cache
 from pathlib import Path
 
+from skill_bridge.converter import convert_skill
 from skill_bridge.models import AgentFormat
+from skill_bridge.provenance import tree_files
 
 #: Overrides where entries live. Tests point it at a temporary directory, and
 #: anyone who wants the conversions out of their home can set it too.
@@ -40,9 +43,16 @@ CACHE_ENV = "SKILL_BRIDGE_CACHE_DIR"
 #: Written last inside an entry, so its presence means the entry is complete.
 MANIFEST = ".cache-key.json"
 
-#: Entries kept before the oldest are dropped. A profile is checked far more
-#: often than its sources change, so a small bound still covers the common case.
-MAX_ENTRIES = 64
+#: Bytes of stored conversions kept before the entries used longest ago are
+#: dropped. The bound is a size rather than a count of entries because one
+#: conversion is a few kilobytes: a profile with hundreds of copies fits, where
+#: a count of 64 would evict the copies a pass had just converted and make the
+#: next pass convert all of them again.
+MAX_BYTES = 32 * 1024 * 1024
+
+#: Ceiling on the number of entries whatever their size, so a cache of very
+#: small conversions cannot fill the directory with entries.
+MAX_ENTRIES = 2048
 
 _TMP_PREFIX = ".tmp-"
 _STALE_TMP_SECONDS = 3600
@@ -161,6 +171,7 @@ def store(source_hash: str, target: AgentFormat, files: dict[str, bytes]) -> Non
                     "key": key,
                     "source": source_hash,
                     "target": target.value,
+                    "bytes": sum(len(data) for data in files.values()),
                     "code": code_digest(),
                 },
                 indent=2,
@@ -176,6 +187,32 @@ def store(source_hash: str, target: AgentFormat, files: dict[str, bytes]) -> Non
         return
     _sweep(root)
     _evict(root)
+
+
+def expected_files(
+    source: Path, target: AgentFormat, source_hash: str
+) -> tuple[dict[str, bytes] | None, str | None]:
+    """What converting ``source`` to ``target`` writes, from the cache if kept.
+
+    Exactly one of the pair is None: the files, or why they could not be worked
+    out. Callers never convert themselves, so `doctor` and `diff` agree on what
+    the conversion is and share the one entry kept for it.
+    """
+    cached = load(source_hash, target)
+    if cached is not None:
+        return cached, None
+    scratch = Path(tempfile.mkdtemp(prefix="skill-bridge-convert-"))
+    try:
+        fresh = convert_skill(source, target, scratch, validate=False)
+        expected = tree_files(fresh.output_dir)
+    except (OSError, ValueError) as exc:
+        return None, f"could not re-convert the source ({exc})"
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    if expected is None:
+        return None, "conversion output cannot be read"
+    store(source_hash, target, expected)
+    return expected, None
 
 
 def _entries(root: Path) -> list[Path]:
@@ -208,10 +245,44 @@ def _sweep(root: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _tree_size(path: Path) -> int:
+    """Bytes of the files in an entry, for entries that do not record it."""
+    total = 0
+    try:
+        for item in path.rglob("*"):
+            if item.is_dir():
+                continue
+            try:
+                total += item.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return total
+
+
+def _size(path: Path) -> int:
+    """Bytes of converted output an entry holds, as its manifest records."""
+    manifest = _read_manifest(path)
+    if manifest is not None:
+        recorded = manifest.get("bytes")
+        if isinstance(recorded, int) and recorded >= 0:
+            return recorded
+    return _tree_size(path)
+
+
 def _evict(root: Path) -> None:
-    """Keep the cache bounded, dropping the entries used longest ago."""
+    """Keep the cache within its byte budget, dropping the oldest entries.
+
+    The newest entry is always kept: it was just written by a check that would
+    otherwise pay for that same conversion on its next run.
+    """
     entries = _entries(root)
-    if len(entries) <= MAX_ENTRIES:
+    if not entries:
+        return
+    sizes = {path: _size(path) for path in entries}
+    total = sum(sizes.values())
+    if len(entries) <= MAX_ENTRIES and total <= MAX_BYTES:
         return
 
     def used(path: Path) -> float:
@@ -220,5 +291,10 @@ def _evict(root: Path) -> None:
         except OSError:
             return 0.0
 
-    for path in sorted(entries, key=used)[: len(entries) - MAX_ENTRIES]:
+    oldest_first = sorted(entries, key=used)
+    while len(oldest_first) > 1 and (
+        len(oldest_first) > MAX_ENTRIES or total > MAX_BYTES
+    ):
+        path = oldest_first.pop(0)
+        total -= sizes[path]
         shutil.rmtree(path, ignore_errors=True)

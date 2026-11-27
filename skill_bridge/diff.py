@@ -11,17 +11,15 @@ from __future__ import annotations
 
 import difflib
 import os
-import shutil
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from skill_bridge import cache
 from skill_bridge.config import SkillLocation
-from skill_bridge.converter import convert_skill
 from skill_bridge.doctor import CHANGED, EXTRA, MISSING
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills
-from skill_bridge.provenance import is_bridge_generated, tree_files
+from skill_bridge.provenance import is_bridge_generated, tree_files, tree_hash
 from skill_bridge.prune import recorded_source, source_disappeared
 
 
@@ -78,17 +76,21 @@ def _changes(expected: dict[str, bytes], actual: dict[str, bytes]) -> list[FileC
 def _diff_one(
     skill_dir: Path, source: Path, target: AgentFormat
 ) -> tuple[SkillDiff | None, str | None]:
-    """One copy's changes, or the reason they could not be worked out."""
-    scratch = Path(tempfile.mkdtemp(prefix="skill-bridge-diff-"))
+    """One copy's changes, or the reason they could not be worked out.
+
+    The conversion is the one `doctor` makes, keyed the same way, so a profile
+    that was just checked — or looked at twice — is answered from the cache
+    instead of converting every source again.
+    """
     try:
-        fresh = convert_skill(source, target, scratch, validate=False)
-        expected = tree_files(fresh.output_dir)
-    except (OSError, ValueError) as exc:
-        return None, f"could not re-convert the source ({exc})"
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        source_hash = tree_hash(source)
+    except OSError:
+        return None, "source cannot be read"
+    expected, problem = cache.expected_files(source, target, source_hash)
+    if expected is None:
+        return None, problem
     actual = tree_files(skill_dir)
-    if expected is None or actual is None:
+    if actual is None:
         return None, "copy cannot be read"
     changes = _changes(expected, actual)
     if not changes:

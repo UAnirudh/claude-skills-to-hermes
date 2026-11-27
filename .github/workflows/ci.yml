@@ -499,6 +499,7 @@ jobs:
           printf -- '---\nname: demo\ndescription: Skill for the diff smoke test.\n---\n\n# Demo\n' \
             > "$work/.claude/skills/demo/SKILL.md"
           cd "$work"
+          export SKILL_BRIDGE_CACHE_DIR="$PWD/cache"
           skill-bridge install --harness hermes --scope project
           skill-bridge diff > clean.txt
           grep -q 'sync would change nothing' clean.txt
@@ -514,6 +515,12 @@ jobs:
           grep -q '^--- a/SKILL.md$' drift.txt
           grep -q '^+++ b/SKILL.md$' drift.txt
           grep -q '^@@ ' drift.txt
+          # The conversion is cached, so a second look at the same source is the
+          # same report without converting it again.
+          skill-bridge diff > drift-again.txt
+          cmp drift.txt drift-again.txt
+          test -n "$(find cache -mindepth 1 -maxdepth 1 -type d -print -quit)" \
+            || { echo "diff stored no conversion"; exit 1; }
           if grep -q '## Later' ".hermes/skills/demo/SKILL.md"; then
             echo "diff wrote to the copy it was inspecting"
             exit 1

@@ -215,14 +215,17 @@ Saying which files inside a behind copy differ means converting its source
 again, which is the expensive half of a check. That conversion is
 deterministic — the same source, target and converter always write the same
 bytes — so its result is kept, and a second check reads it back instead of
-converting again. On 20 drifted skills (1.3 MiB of markdown) a cold pass takes
-77 ms and a warm one 31 ms. The key is the source's content, the
+converting again. `diff` reads the same entries, so reviewing a profile twice
+converts each source once. On 20 drifted skills (1.3 MiB of markdown) a cold
+pass takes 77 ms and a warm one 31 ms. The key is the source's content, the
 target format and a digest of the converter's own code, so editing a source or
 upgrading skill-bridge converts it again; entries live in `~/.cache/skill-bridge`
 (`%LOCALAPPDATA%\skill-bridge\Cache` on Windows, `~/Library/Caches/skill-bridge`
-on macOS), `SKILL_BRIDGE_CACHE_DIR` moves them, and a missing or damaged entry
-is only a miss — the check converts, as it would without a cache, and reports
-the same thing.
+on macOS) and `SKILL_BRIDGE_CACHE_DIR` moves them. The bound is a size, 32 MiB
+of converted output, rather than a count of entries: a profile with hundreds of
+copies keeps them all instead of evicting what the pass just converted and
+converting it again next run. A missing or damaged entry is only a miss — the
+check converts, as it would without a cache, and reports the same thing.
 
 A copy whose marker records an older skill-bridge than the one running is
 `outdated`: a converter fix since then has not reached it. Its contents can
@@ -292,9 +295,11 @@ copy, so you can see exactly what a `sync` would add, change or remove —
 including the hand-written text it would overwrite in a copy that was edited.
 Nothing is written, copies whose source is gone are left out (`sync --prune` is
 the answer for those), and the exit code is 0: this is a view, and
-`doctor --strict` is the check. The one exception is a `--skill` name that
-matches no copy — a typo, not a clean profile — which exits 1 and says so
-instead of printing "nothing to change".
+`doctor --strict` is the check. Its conversions come from the same cache
+`doctor` fills, so a second review of an unchanged profile converts nothing.
+The one exception is a `--skill` name that matches no copy — a typo, not a
+clean profile — which exits 1 and says so instead of printing "nothing to
+change".
 
 ```console
 $ skill-bridge diff --skill demo

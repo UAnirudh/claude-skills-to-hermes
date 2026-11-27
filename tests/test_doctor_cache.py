@@ -15,7 +15,6 @@ from pathlib import Path
 import yaml
 
 from skill_bridge import cache
-from skill_bridge import doctor as doctor_module
 from skill_bridge.config import load_config
 from skill_bridge.doctor import diagnose
 from skill_bridge.models import AgentFormat
@@ -39,9 +38,13 @@ def write_skill(root: Path, name: str) -> Path:
     return skill_dir
 
 
-def write_config(tmp_path: Path, targets: tuple[str, ...] = ("hermes",)) -> Path:
+def write_config(
+    tmp_path: Path,
+    targets: tuple[str, ...] = ("hermes",),
+    names: tuple[str, ...] = NAMES,
+) -> Path:
     source = tmp_path / "src"
-    for name in NAMES:
+    for name in names:
         write_skill(source, name)
     config = {
         "default_profile": "test",
@@ -60,11 +63,15 @@ def write_config(tmp_path: Path, targets: tuple[str, ...] = ("hermes",)) -> Path
     return path
 
 
-def drifted(tmp_path: Path, targets: tuple[str, ...] = ("hermes",)) -> Path:
+def drifted(
+    tmp_path: Path,
+    targets: tuple[str, ...] = ("hermes",),
+    names: tuple[str, ...] = NAMES,
+) -> Path:
     """A profile whose copies are all behind their sources."""
-    config = write_config(tmp_path, targets)
+    config = write_config(tmp_path, targets, names)
     run_sync(config_path=config)
-    for name in NAMES:
+    for name in names:
         path = tmp_path / "src" / name / "SKILL.md"
         path.write_text(
             path.read_text(encoding="utf-8") + "\n## Added later\n", encoding="utf-8"
@@ -84,23 +91,23 @@ def view(report):
 
 
 def count_conversions(monkeypatch) -> list[Path]:
-    """Record every conversion doctor makes, and still make it."""
+    """Record every conversion the cache makes, and still make it."""
     calls: list[Path] = []
-    real = doctor_module.convert_skill
+    real = cache.convert_skill
 
     def wrapper(*args, **kwargs):
         calls.append(Path(args[0]))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(doctor_module, "convert_skill", wrapper)
+    monkeypatch.setattr(cache, "convert_skill", wrapper)
     return calls
 
 
 def forbid_conversion(monkeypatch) -> None:
     def boom(*args, **kwargs):
-        raise AssertionError("doctor converted a source it had already converted")
+        raise AssertionError("a source was converted after its result was cached")
 
-    monkeypatch.setattr(doctor_module, "convert_skill", boom)
+    monkeypatch.setattr(cache, "convert_skill", boom)
 
 
 def test_a_second_check_reads_the_conversion_back(tmp_path, monkeypatch):
@@ -194,6 +201,37 @@ def test_a_broken_entry_is_a_miss_and_is_repaired(tmp_path, monkeypatch):
 
 def test_entries_are_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "MAX_ENTRIES", 1)
+    config = drifted(tmp_path, targets=("hermes", "cursor"))
+
+    diagnose(targets_of(config))
+
+    assert len(cache._entries(cache.cache_root())) == 1
+
+
+def test_a_profile_larger_than_the_old_bound_keeps_every_entry(tmp_path, monkeypatch):
+    """Seventy copies: the bound is bytes, so one pass is not evicted by the next.
+
+    A count of 64 entries used to evict what a larger profile had just
+    converted, so every pass converted the whole profile again.
+    """
+    names = tuple(f"skill-{index:02d}" for index in range(70))
+    config = drifted(tmp_path, names=names)
+
+    first = diagnose(targets_of(config))
+    assert len(first.findings) == len(names)
+    assert len(cache._entries(cache.cache_root())) == len(names)
+
+    forbid_conversion(monkeypatch)
+    second = diagnose(targets_of(config))
+
+    assert view(second) == view(first)
+
+
+def test_the_bound_counts_bytes_not_only_entries(tmp_path, monkeypatch):
+    # A byte budget evicts even when the entry cap has room, so the cap is not
+    # the only thing keeping the directory bounded.
+    monkeypatch.setattr(cache, "MAX_ENTRIES", 1000)
+    monkeypatch.setattr(cache, "MAX_BYTES", 1)
     config = drifted(tmp_path, targets=("hermes", "cursor"))
 
     diagnose(targets_of(config))

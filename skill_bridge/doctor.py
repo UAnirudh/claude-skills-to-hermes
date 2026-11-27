@@ -21,15 +21,13 @@ compare, and never touches the copies or the sources.
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from skill_bridge import cache
 from skill_bridge.compat import lossy_fields
 from skill_bridge.config import SkillLocation, SyncProfile
-from skill_bridge.converter import convert_skill, sweep_stale_holders
+from skill_bridge.converter import sweep_stale_holders
 from skill_bridge.locking import DEFAULT_LOCK_WAIT, exclusive_run, lock_path
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
@@ -279,28 +277,13 @@ def _reconverted_difference(
     """Files that differ from converting ``source`` now, and why if unknown.
 
     Converting is the expensive half of a check and it is deterministic, so the
-    result is kept in :mod:`skill_bridge.cache`: the same source, target and
+    result comes from :mod:`skill_bridge.cache`: the same source, target and
     converter always produce the same bytes, and a second check reads them back
-    instead of paying for the conversion again.
+    instead of paying for the conversion again. `diff` reads the same entries.
     """
-    cached = cache.load(source_hash, target)
-    if cached is not None:
-        actual = _snapshot(skill_dir)
-        if actual is None:
-            return [], "copy cannot be read"
-        return _compare_files(cached, actual), None
-
-    scratch = Path(tempfile.mkdtemp(prefix="skill-bridge-doctor-"))
-    try:
-        fresh = convert_skill(source, target, scratch, validate=False)
-        expected = _snapshot(fresh.output_dir)
-    except (OSError, ValueError) as exc:
-        return [], f"could not re-convert the source ({exc})"
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+    expected, problem = cache.expected_files(source, target, source_hash)
     if expected is None:
-        return [], "copy cannot be read"
-    cache.store(source_hash, target, expected)
+        return [], problem
     actual = _snapshot(skill_dir)
     if actual is None:
         return [], "copy cannot be read"

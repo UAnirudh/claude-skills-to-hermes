@@ -6,6 +6,7 @@ import shutil
 
 from click.testing import CliRunner
 
+from skill_bridge import cache
 from skill_bridge.cli import main
 from skill_bridge.diff import diff_profile, render
 from skill_bridge.config import load_config
@@ -209,6 +210,23 @@ def test_an_unknown_profile_is_an_error(tmp_path):
 
     assert result.exit_code == 1
     assert "nope" in result.output
+
+
+def test_a_second_diff_reads_the_conversion_back(tmp_path, monkeypatch):
+    config, _ = synced(tmp_path)
+    append(tmp_path / "src" / "demo" / "SKILL.md", "\n## Later\n")
+    targets = load_config(config).get_profile("test").targets
+    first = diff_profile(targets)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("diff converted a source it had already converted")
+
+    # `diff` shares doctor's cache, so looking at an unchanged profile again
+    # must not convert anything.
+    monkeypatch.setattr(cache, "convert_skill", boom)
+    second = diff_profile(targets)
+
+    assert second.diffs == first.diffs
 
 
 def test_the_report_can_be_read_without_the_cli(tmp_path):

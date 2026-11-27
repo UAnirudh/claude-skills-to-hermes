@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from skill_bridge import doctor as doctor_module
+from skill_bridge import cache
 from skill_bridge.cli import main
 from skill_bridge.config import SkillLocation
 from skill_bridge.doctor import EDITED, LOSSY, OUT_OF_SYNC, STALE, diagnose
@@ -67,7 +67,7 @@ def forbid_conversion(monkeypatch) -> None:
     def boom(*args, **kwargs):
         raise AssertionError("doctor re-converted a copy that had fingerprints")
 
-    monkeypatch.setattr(doctor_module, "convert_skill", boom)
+    monkeypatch.setattr(cache, "convert_skill", boom)
 
 
 def test_a_fresh_sync_leaves_nothing_to_report(tmp_path):
