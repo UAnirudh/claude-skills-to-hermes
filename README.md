@@ -321,6 +321,20 @@ demo (hermes)  .hermes/skills/demo
 1 file(s) in 1 copy(ies) would change. sync applies them.
 ```
 
+## Watching
+
+`skill-bridge watch` re-syncs whenever a source changes, and it is built to
+keep running. An event that arrives while a sync is still going is coalesced
+into one follow-up pass rather than starting a second sync in another thread; a
+callback that raises — printing to a closed pipe, say — ends that one report
+instead of the watch; and a source folder that is deleted and recreated
+(reinstalling a harness, `rm -rf ~/.claude`, switching branches) is watched
+again as soon as it reappears, with a sync for whatever arrived while it was
+gone. If the operating system refuses or loses the watch (inotify limits), it
+says so and exits 1 instead of sleeping while nothing is watched. Ctrl+C stops
+it, and the observer thread is always released, even when a sync or a callback
+failed.
+
 ## Reverse conversion
 
 Pull skills from any harness into another:

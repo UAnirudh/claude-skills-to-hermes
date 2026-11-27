@@ -532,6 +532,37 @@ jobs:
           grep -q '^-<!-- hand written -->$' edited.txt
           echo "diff smoke test passed"
 
+      # Watch mode is a long-running process: start it, change a source, and
+      # check the copy was refreshed before stopping it.
+      - name: Smoke test watch mode
+        shell: bash
+        run: |
+          work=".ci-watch"
+          rm -rf "$work"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the watch smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          skill-bridge install --harness hermes --scope project
+          skill-bridge watch --debounce 0.2 > watch.log 2>&1 &
+          watcher=$!
+          sleep 3
+          printf -- '\n## Later\n' >> ".claude/skills/demo/SKILL.md"
+          for _ in $(seq 1 20); do
+            if grep -q '## Later' ".hermes/skills/demo/SKILL.md" 2>/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+          kill "$watcher" 2>/dev/null || true
+          wait "$watcher" 2>/dev/null || true
+          if ! grep -q '## Later' ".hermes/skills/demo/SKILL.md"; then
+            cat watch.log
+            echo "watch did not refresh the copy"
+            exit 1
+          fi
+          echo "watch smoke test passed"
+
       # doctor re-converts drifted copies to say which files differ. That result
       # is cached, so the second check of the same profile must answer from the
       # cache with the identical report, and a changed source must convert again.

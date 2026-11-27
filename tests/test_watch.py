@@ -1,6 +1,8 @@
 """Watch mode must work with the profiles `install` writes."""
 
 import os
+import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -40,12 +42,18 @@ class FakeEventHandler:
 class FakeObserver:
     def __init__(self) -> None:
         self.scheduled: list[str] = []
+        self.unscheduled: list[str] = []
         self.started = False
         self.stopped = False
         self.joined = False
+        self.alive = True
 
     def schedule(self, handler, path, recursive=False):  # noqa: ARG002
         self.scheduled.append(path)
+        return path
+
+    def unschedule(self, watch) -> None:
+        self.unscheduled.append(watch)
 
     def start(self) -> None:
         self.started = True
@@ -55,6 +63,9 @@ class FakeObserver:
 
     def join(self) -> None:
         self.joined = True
+
+    def is_alive(self) -> bool:
+        return self.alive
 
 
 def interrupt_sleep(_seconds: float) -> None:
@@ -182,6 +193,118 @@ def test_trigger_reports_errors_without_dying(home):
 
     assert errors and isinstance(errors[0], FileNotFoundError)
     assert isinstance(handler.last_error, FileNotFoundError)
+
+
+def test_an_event_during_a_sync_waits_for_it_instead_of_racing_it(home, monkeypatch):
+    profile = auto_import_config(AgentFormat.HERMES).get_profile(None)
+    started = threading.Event()
+    release = threading.Event()
+    runs: list[str] = []
+
+    def slow_sync(_profile):
+        runs.append("run")
+        started.set()
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(watch, "sync_profile", slow_sync)
+    handler = watch.SkillWatchHandler(profile, debounce_seconds=0.0)
+
+    worker = threading.Thread(target=handler.trigger, args=("first",))
+    worker.start()
+    assert started.wait(5)
+    handler.trigger("second")  # arrives while the first sync is still running
+    release.set()
+    worker.join(5)
+
+    assert len(runs) == 1  # never two syncs at once
+    handler.flush_pending()
+    assert len(runs) == 2  # and the event was not lost
+
+
+def test_a_callback_that_raises_does_not_stop_the_watcher(home):
+    write_skill(global_skill_root(AgentFormat.CLAUDE_CODE), "watched")
+    profile = auto_import_config(AgentFormat.HERMES).get_profile(None)
+
+    def closed_pipe(reason, results):
+        raise BrokenPipeError("stdout closed")
+
+    handler = watch.SkillWatchHandler(
+        profile, debounce_seconds=0.0, on_sync=closed_pipe
+    )
+    handler.trigger("first")
+
+    assert isinstance(handler.last_error, BrokenPipeError)
+
+    seen = []
+    handler.on_sync = lambda reason, results: seen.append(results)
+    handler.trigger("second", force=True)
+
+    assert [result.skill_name for result in seen[0]] == ["watched"]
+    assert handler.last_error is None
+
+
+def test_a_dead_observer_stops_the_loop_instead_of_watching_nothing(home, monkeypatch):
+    profile = auto_import_config(AgentFormat.HERMES).get_profile(None)
+    observer = FakeObserver()
+    observer.alive = False
+    monkeypatch.setattr(
+        watch, "_try_watchdog", lambda: (FakeEventHandler, lambda: observer)
+    )
+    monkeypatch.setattr(watch.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(RuntimeError, match="observer"):
+        watch.watch_profile(profile)
+
+    assert observer.stopped and observer.joined
+
+
+def test_a_deleted_root_is_forgotten_so_it_can_be_watched_again(home):
+    claude = global_skill_root(AgentFormat.CLAUDE_CODE)
+    write_skill(claude, "one")
+    profile = auto_import_config(AgentFormat.HERMES).get_profile(None)
+    observer = FakeObserver()
+    roots = watch._RootWatcher(observer, object(), profile)
+    assert roots.refresh() is True
+
+    shutil.rmtree(claude)
+    roots.forget(str(claude))  # watchdog reports the root's own deletion
+    assert observer.unscheduled == [str(claude)]
+
+    # Recreated before the rescan that would have noticed it missing: the
+    # forgotten watch is what lets it be armed again.
+    write_skill(claude, "back")
+    assert roots.refresh() is True
+    assert observer.scheduled == [str(claude), str(claude)]
+
+
+def test_a_source_root_that_is_recreated_is_watched_again(home, monkeypatch):
+    claude = global_skill_root(AgentFormat.CLAUDE_CODE)
+    write_skill(claude, "one")
+    profile = auto_import_config(AgentFormat.HERMES).get_profile(None)
+
+    observer = FakeObserver()
+    monkeypatch.setattr(
+        watch, "_try_watchdog", lambda: (FakeEventHandler, lambda: observer)
+    )
+    monkeypatch.setattr(watch, "RESCAN_SECONDS", 0.0)
+    ticks: list[int] = []
+
+    def sleep(_seconds):
+        ticks.append(1)
+        if len(ticks) == 1:
+            shutil.rmtree(claude)  # a harness directory is deleted ...
+        elif len(ticks) == 2:
+            write_skill(claude, "back")  # ... and created again
+        else:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(watch.time, "sleep", sleep)
+
+    watch.watch_profile(profile)
+
+    assert observer.scheduled == [str(claude), str(claude)]
+    assert observer.unscheduled == [os.path.realpath(claude)]
 
 
 class FakeEvent:
