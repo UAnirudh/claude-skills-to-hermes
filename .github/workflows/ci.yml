@@ -525,17 +525,19 @@ jobs:
           grep -q '^-<!-- hand written -->$' edited.txt
           echo "diff smoke test passed"
 
-      # doctor re-converts drifted copies together rather than one after another;
-      # the report still has to name every one of them, with its files and lines.
-      - name: Smoke test doctor over several copies
+      # doctor re-converts drifted copies to say which files differ. That result
+      # is cached, so the second check of the same profile must answer from the
+      # cache with the identical report, and a changed source must convert again.
+      - name: Smoke test the doctor cache
         shell: bash
         run: |
-          work=".ci-parallel"
+          work=".ci-cache"
           rm -rf "$work"
+          export SKILL_BRIDGE_CACHE_DIR="$PWD/$work/cache"
           mkdir -p "$work/.claude/skills"
           for name in alpha bravo charlie; do
             mkdir -p "$work/.claude/skills/$name"
-            printf -- "---\nname: $name\ndescription: Skill $name for the parallel smoke test.\n---\n\n# $name\n" \
+            printf -- "---\nname: $name\ndescription: Skill $name for the cache smoke test.\n---\n\n# $name\n" \
               > "$work/.claude/skills/$name/SKILL.md"
           done
           cd "$work"
@@ -543,11 +545,16 @@ jobs:
           for name in alpha bravo charlie; do
             printf -- "\n## $name later\n" >> ".claude/skills/$name/SKILL.md"
           done
-          skill-bridge doctor --json > report.json
+          skill-bridge doctor --json > first.json
+          entries=$(find cache -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+          test "$entries" -ge 3 || { echo "expected cached conversions, found $entries"; exit 1; }
+          # Same sources, same report: every conversion came back from the cache.
+          skill-bridge doctor --json > second.json
+          cmp first.json second.json
           python - <<'PY'
           import json
 
-          with open("report.json", encoding="utf-8") as handle:
+          with open("first.json", encoding="utf-8") as handle:
               payload = json.load(handle)
           kinds = [item["kind"] for item in payload["findings"]]
           assert kinds == ["out-of-sync"] * 3, kinds
@@ -556,9 +563,69 @@ jobs:
           for item in payload["findings"]:
               assert item["files"], item
               assert item["files"][0]["line"] > 1, item
-          print("parallel doctor report ok")
+          print("doctor cache report ok")
           PY
-          echo "parallel doctor smoke test passed"
+          # A changed source is converted again, not answered from the old entry.
+          printf -- "\n## alpha again\n" >> ".claude/skills/alpha/SKILL.md"
+          skill-bridge doctor --json > third.json
+          added=$(find cache -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+          test "$added" -gt "$entries" || { echo "a changed source reused its old conversion"; exit 1; }
+          echo "doctor cache smoke test passed"
+
+      # A config with several profiles is checked in one pass; a folder two of
+      # them name is reported once, and --strict and --fix cover all of them.
+      - name: Smoke test doctor --all-profiles
+        shell: bash
+        run: |
+          work=".ci-profiles"
+          rm -rf "$work"
+          export SKILL_BRIDGE_CACHE_DIR="$PWD/$work/cache"
+          mkdir -p "$work/.claude/skills/demo"
+          printf -- '---\nname: demo\ndescription: Skill for the all-profiles smoke test.\n---\n\n# Demo\n' \
+            > "$work/.claude/skills/demo/SKILL.md"
+          cd "$work"
+          cat > skill-bridge.yaml <<'YAML'
+          default_profile: hermes
+          profiles:
+            hermes:
+              source: {format: claude-code, path: .claude/skills}
+              targets:
+                - {format: hermes, path: .hermes/skills}
+            shared:
+              source: {format: claude-code, path: .claude/skills}
+              targets:
+                - {format: hermes, path: .hermes/skills}
+            cursor:
+              source: {format: claude-code, path: .claude/skills}
+              targets:
+                - {format: cursor, path: .cursor/skills}
+          YAML
+          skill-bridge sync --profile hermes
+          skill-bridge sync --profile cursor
+          printf -- '\n## Added later\n' >> ".claude/skills/demo/SKILL.md"
+          skill-bridge doctor --all-profiles --json > all.json
+          python - <<'PY'
+          import json
+
+          with open("all.json", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          assert payload["profile"] is None, payload["profile"]
+          names = [item["profile"] for item in payload["profiles"]]
+          assert names == ["hermes", "shared", "cursor"], names
+          checked = {item["profile"]: item["checked"] for item in payload["profiles"]}
+          assert checked == {"hermes": 1, "shared": 0, "cursor": 1}, checked
+          assert payload["checked"] == 2, payload["checked"]
+          owners = {item["profile"] for item in payload["findings"]}
+          assert owners == {"hermes", "cursor"}, owners
+          print("all-profiles report ok")
+          PY
+          if skill-bridge doctor --all-profiles --strict > strict.txt 2>&1; then
+            echo "doctor --all-profiles --strict passed with drift"
+            exit 1
+          fi
+          skill-bridge doctor --all-profiles --fix --strict > fix.txt
+          grep -q "No drift left." fix.txt
+          echo "all-profiles smoke test passed"
 
       # Global-scope import plus the auto-import profile that `install` writes:
       # `sync` must refresh from the harnesses detected at install time.

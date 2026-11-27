@@ -23,12 +23,12 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from skill_bridge import cache
 from skill_bridge.compat import lossy_fields
-from skill_bridge.config import SkillLocation
+from skill_bridge.config import SkillLocation, SyncProfile
 from skill_bridge.converter import convert_skill, sweep_stale_holders
 from skill_bridge.locking import DEFAULT_LOCK_WAIT, exclusive_run, lock_path
 from skill_bridge.models import AgentFormat
@@ -85,6 +85,8 @@ class DoctorReport:
 
     checked: int = 0
     findings: list[Finding] = field(default_factory=list)
+    #: Profiles that named copies already checked earlier in the same run.
+    reused_from: set[str] = field(default_factory=set)
 
     def of_kind(self, kind: str) -> list[Finding]:
         return [finding for finding in self.findings if finding.kind == kind]
@@ -188,14 +190,19 @@ def _difference(
     output_sha = marker.get("output-sha")
     try:
         copy_changed = bool(output_sha) and tree_hash(skill_dir) != output_sha
-        source_changed = bool(source_sha) and tree_hash(source) != source_sha
+        # Taken once: it decides drift and names the cache entry of the
+        # conversion below.
+        current_source = tree_hash(source)
     except OSError:
         return EDITED, "copy cannot be read", []
+    source_changed = bool(source_sha) and current_source != source_sha
 
     if not (copy_changed or source_changed):
         if source_sha and output_sha:
             return None  # both fingerprints agree: nothing to re-convert
-        differences, problem = _reconverted_difference(skill_dir, source, target)
+        differences, problem = _reconverted_difference(
+            skill_dir, source, target, current_source
+        )
         if problem is not None:
             return EDITED, f"{problem}; no fingerprints to say which side changed", []
         if not differences:
@@ -210,7 +217,9 @@ def _difference(
     # Drift with fingerprints: the marker says *that* it drifted, and a fresh
     # conversion is the only way to say which files inside the copy to point a
     # reader at. Only copies already known to be wrong pay for it.
-    differences, _problem = _reconverted_difference(skill_dir, source, target)
+    differences, _problem = _reconverted_difference(
+        skill_dir, source, target, current_source
+    )
     if copy_changed and source_changed:
         return EDITED, "edited by hand and its source changed too", differences
     if copy_changed:
@@ -265,9 +274,22 @@ def _outdated(skill_dir: Path) -> str | None:
 
 
 def _reconverted_difference(
-    skill_dir: Path, source: Path, target: AgentFormat
+    skill_dir: Path, source: Path, target: AgentFormat, source_hash: str
 ) -> tuple[list[FileDifference], str | None]:
-    """Files that differ from converting ``source`` now, and why if unknown."""
+    """Files that differ from converting ``source`` now, and why if unknown.
+
+    Converting is the expensive half of a check and it is deterministic, so the
+    result is kept in :mod:`skill_bridge.cache`: the same source, target and
+    converter always produce the same bytes, and a second check reads them back
+    instead of paying for the conversion again.
+    """
+    cached = cache.load(source_hash, target)
+    if cached is not None:
+        actual = _snapshot(skill_dir)
+        if actual is None:
+            return [], "copy cannot be read"
+        return _compare_files(cached, actual), None
+
     scratch = Path(tempfile.mkdtemp(prefix="skill-bridge-doctor-"))
     try:
         fresh = convert_skill(source, target, scratch, validate=False)
@@ -276,180 +298,139 @@ def _reconverted_difference(
         return [], f"could not re-convert the source ({exc})"
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+    if expected is None:
+        return [], "copy cannot be read"
+    cache.store(source_hash, target, expected)
     actual = _snapshot(skill_dir)
-    if expected is None or actual is None:
+    if actual is None:
         return [], "copy cannot be read"
     return _compare_files(expected, actual), None
 
 
 @dataclass
-class _Copy:
-    """One generated copy, with everything needed to report on it.
+class _Pass:
+    """Copies already checked in this run, and which profile checked them.
 
-    Collected first and reported second, so the re-conversions — the expensive
-    part of a check — can run together while the findings still come out in the
-    order the copies were found.
+    Harnesses can share a folder (Codex and Amp both use ``~/.agents/skills``)
+    and so can two profiles, so each copy is checked once and remembered. The
+    owner is the profile that saw it first, which is what lets a later profile
+    say its copies were covered instead of repeating the same finding.
     """
 
-    skill_dir: Path
-    target: AgentFormat
-    source: Path | None = None
-    #: Why the copy is stale, or None when its source is still there.
-    stale: str | None = None
-    difference: tuple[str, str, list[FileDifference]] | None = None
-    lossy: list[Finding] = field(default_factory=list)
+    #: Real path of each folder walked, and the copies found in it.
+    roots: dict[str, list[str]] = field(default_factory=dict)
+    #: Real path of each copy checked, and the profile that checked it.
+    dirs: dict[str, str] = field(default_factory=dict)
+    owner: str | None = None
+
+    def check(self, locations: list[SkillLocation], report: DoctorReport) -> None:
+        for loc in locations:
+            root = Path(loc.path)
+            sweep_stale_holders(root)
+            if not root.is_dir():
+                continue
+            # Codex and Amp share ~/.agents/skills, and so can two profiles:
+            # walk each real folder once and remember the copies it holds.
+            root_key = os.path.realpath(root)
+            if root_key in self.roots:
+                self._covered(self.roots[root_key], report)
+                continue
+            self.roots[root_key] = []
+
+            for skill_dir in find_skills(root):
+                if not is_bridge_generated(skill_dir):
+                    continue  # hand-written: nothing to be in or out of sync with
+                real = os.path.realpath(skill_dir)
+                self.roots[root_key].append(real)
+                if real in self.dirs:
+                    self._covered([real], report)
+                    continue
+                self.dirs[real] = self.owner or ""
+                report.checked += 1
+                self._check_copy(skill_dir, loc.format, report)
+
+    def _covered(self, copies: list[str], report: DoctorReport) -> None:
+        """Note copies another profile already checked, instead of repeating."""
+        for real in copies:
+            first = self.dirs.get(real)
+            if first and first != self.owner:
+                report.reused_from.add(first)
+
+    @staticmethod
+    def _check_copy(
+        skill_dir: Path, target: AgentFormat, report: DoctorReport
+    ) -> None:
+        """Add this copy's findings, in the order they are worth reading."""
+        reason = source_disappeared(skill_dir)
+        if reason is not None:
+            report.findings.append(
+                Finding(STALE, skill_dir.name, target, skill_dir, reason)
+            )
+            return  # no source left to compare or measure loss against
+
+        source = recorded_source(skill_dir)
+        if source is None:
+            return  # no absolute source path: cannot prove anything
+
+        try:
+            bundle = load_skill(source)
+        except (OSError, ValueError):
+            bundle = None
+        lost = lossy_fields(bundle.frontmatter, target) if bundle is not None else []
+
+        difference = _difference(skill_dir, source, target)
+        if difference is not None:
+            kind, detail, files = difference
+            report.findings.append(
+                Finding(kind, skill_dir.name, target, skill_dir, detail, files)
+            )
+        else:
+            # Only a copy with nothing else wrong is worth a version note: when
+            # it already needs a sync, that finding is the one to act on, and a
+            # second line about the same copy is noise.
+            stale_version = _outdated(skill_dir)
+            if stale_version is not None:
+                report.findings.append(
+                    Finding(OUTDATED, skill_dir.name, target, skill_dir, stale_version)
+                )
+        if lost:
+            report.findings.append(
+                Finding(LOSSY, skill_dir.name, target, skill_dir, ", ".join(lost))
+            )
 
 
-#: How many re-conversions to run at once by default. The work is Python, so
-#: going far past the core count buys overhead rather than time.
-DEFAULT_WORKERS = 4
-
-
-def _worker_count(workers: int | None, jobs: int) -> int:
-    """Conversions to run at once: never more than the work, never zero."""
-    limit = DEFAULT_WORKERS if workers is None else workers
-    return max(1, min(limit, jobs))
-
-
-def _differences(
-    copies: list[_Copy], workers: int | None
-) -> list[tuple[str, str, list[FileDifference]] | None]:
-    """Re-convert each copy's source, several at a time when there are several.
-
-    Every conversion writes into its own temporary directory and only reads the
-    source, so they do not interfere. ``map`` returns the results in input
-    order, which is what keeps the report stable whichever way it ran.
-    """
-    if not copies:
-        return []
-    jobs = [
-        (copy.skill_dir, copy.source, copy.target)
-        for copy in copies
-        if copy.source is not None
-    ]
-    limit = _worker_count(workers, len(jobs))
-    if limit == 1:
-        return [_difference(*job) for job in jobs]
-    with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="skill-bridge") as pool:
-        return list(pool.map(lambda job: _difference(*job), jobs))
-
-
-def diagnose(
-    locations: list[SkillLocation], *, workers: int | None = None
-) -> DoctorReport:
+def diagnose(locations: list[SkillLocation]) -> DoctorReport:
     """Check every generated copy under ``locations``.
 
     The copies themselves are never written to; the one thing this removes is
     a staging holder a killed conversion left behind days ago.
 
     A copy that is behind costs one conversion to say which files differ, and
-    that work does not depend on any other copy, so it runs in parallel —
-    ``workers`` caps how many at once. Findings are assembled afterwards in the
-    order the copies were found, so the report does not depend on scheduling.
+    that conversion is deterministic, so its result is cached: checking the
+    same profile again reads it back instead of paying for it twice.
     """
     report = DoctorReport()
-    copies: list[_Copy] = []
-    seen_roots: set[str] = set()
-    seen_dirs: set[str] = set()
-
-    for loc in locations:
-        root = Path(loc.path)
-        sweep_stale_holders(root)
-        if not root.is_dir():
-            continue
-        # Codex and Amp share ~/.agents/skills: check each real folder once.
-        root_key = os.path.realpath(root)
-        if root_key in seen_roots:
-            continue
-        seen_roots.add(root_key)
-
-        for skill_dir in find_skills(root):
-            if not is_bridge_generated(skill_dir):
-                continue  # hand-written: nothing to be in or out of sync with
-            real = os.path.realpath(skill_dir)
-            if real in seen_dirs:
-                continue
-            seen_dirs.add(real)
-            report.checked += 1
-
-            copy = _Copy(skill_dir, loc.format)
-            reason = source_disappeared(skill_dir)
-            if reason is not None:
-                copy.stale = reason
-                copies.append(copy)
-                continue  # no source left to compare or measure loss against
-
-            source = recorded_source(skill_dir)
-            if source is None:
-                continue  # no absolute source path: cannot prove anything
-            copy.source = source
-
-            try:
-                bundle = load_skill(source)
-            except (OSError, ValueError):
-                bundle = None
-            if bundle is not None:
-                lost = lossy_fields(bundle.frontmatter, loc.format)
-                if lost:
-                    copy.lossy.append(
-                        Finding(
-                            LOSSY,
-                            skill_dir.name,
-                            loc.format,
-                            skill_dir,
-                            ", ".join(lost),
-                        )
-                    )
-            copies.append(copy)
-
-    # The conversions are the expensive part, and none needs another's answer,
-    # so they run together; the findings are then emitted in the order the
-    # copies were found, exactly as a serial check would have done.
-    behind = [copy for copy in copies if copy.source is not None]
-    for copy, difference in zip(behind, _differences(behind, workers)):
-        copy.difference = difference
-
-    for copy in copies:
-        if copy.stale is not None:
-            report.findings.append(
-                Finding(
-                    STALE,
-                    copy.skill_dir.name,
-                    copy.target,
-                    copy.skill_dir,
-                    copy.stale,
-                )
-            )
-            continue
-        if copy.difference is not None:
-            kind, detail, files = copy.difference
-            report.findings.append(
-                Finding(
-                    kind,
-                    copy.skill_dir.name,
-                    copy.target,
-                    copy.skill_dir,
-                    detail,
-                    files,
-                )
-            )
-        else:
-            # Only a copy with nothing else wrong is worth a version note: when
-            # it already needs a sync, that finding is the one to act on, and a
-            # second line about the same copy is noise.
-            stale_version = _outdated(copy.skill_dir)
-            if stale_version is not None:
-                report.findings.append(
-                    Finding(
-                        OUTDATED,
-                        copy.skill_dir.name,
-                        copy.target,
-                        copy.skill_dir,
-                        stale_version,
-                    )
-                )
-        report.findings.extend(copy.lossy)
+    _Pass().check(locations, report)
     return report
+
+
+def diagnose_profiles(profiles: list[SyncProfile]) -> dict[str, DoctorReport]:
+    """Check several profiles in one pass, reporting each copy once.
+
+    Profiles in one config often cover the same folder — `install` writes an
+    `auto-import` profile beside the user's own, and both can name the same
+    harness — so the check is shared: a copy is reported under the first
+    profile that names it, and a later profile that would have covered it
+    records that in ``reused_from`` rather than repeating the finding.
+    """
+    run = _Pass()
+    reports: dict[str, DoctorReport] = {}
+    for profile in profiles:
+        report = DoctorReport()
+        run.owner = profile.name
+        run.check(profile.targets, report)
+        reports[profile.name] = report
+    return reports
 
 
 @dataclass
@@ -556,6 +537,22 @@ def report_schema() -> dict[str, object]:
     contract is `report-version`; the tests keep the two in step.
     """
     count = {"type": "integer", "minimum": 0}
+
+    def counts_schema() -> dict[str, object]:
+        """Per-kind finding counts, shared by the report and each profile."""
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            # `outdated` came after version 1 was published, so it is optional
+            # here: a document written before it still validates, and a
+            # consumer that has never heard of it can ignore the key.
+            "required": [STALE, OUT_OF_SYNC, EDITED, LOSSY],
+            "properties": {
+                kind: count
+                for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
+            },
+        }
+
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": f"urn:skill-bridge:doctor-report:{REPORT_VERSION}",
@@ -576,16 +573,22 @@ def report_schema() -> dict[str, object]:
             "checked": count,
             "clean": {"type": "boolean"},
             "drift": count,
-            "counts": {
-                "type": "object",
-                "additionalProperties": False,
-                # `outdated` came after version 1 was published, so it is
-                # optional here: a document written before it still validates,
-                # and a consumer that has never heard of it can ignore the key.
-                "required": [STALE, OUT_OF_SYNC, EDITED, LOSSY],
-                "properties": {
-                    kind: count
-                    for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
+            "counts": counts_schema(),
+            # Present only for `doctor --all-profiles`: one entry per profile,
+            # so a CI script can report per profile without splitting findings.
+            "profiles": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["profile", "checked", "clean", "drift", "counts"],
+                    "properties": {
+                        "profile": {"type": "string"},
+                        "checked": count,
+                        "clean": {"type": "boolean"},
+                        "drift": count,
+                        "counts": counts_schema(),
+                    },
                 },
             },
             "findings": {
@@ -611,6 +614,8 @@ def report_schema() -> dict[str, object]:
                         "path": {"type": "string"},
                         "file": {"type": "string"},
                         "detail": {"type": "string"},
+                        # Only when one run covered several profiles.
+                        "profile": {"type": "string"},
                         "files": {
                             "type": "array",
                             "items": {
@@ -652,6 +657,39 @@ def report_schema() -> dict[str, object]:
     }
 
 
+def _finding_dict(
+    finding: Finding, profile: str | None = None
+) -> dict[str, object]:
+    """One finding as a document, with the file a CI system can annotate."""
+    payload: dict[str, object] = {
+        "kind": finding.kind,
+        "skill": finding.skill_name,
+        "target": finding.target_format.value,
+        "path": str(finding.skill_dir),
+        "file": str(Path(finding.skill_dir) / "SKILL.md"),
+        "detail": finding.detail,
+        "files": [
+            {
+                "name": item.name,
+                "status": item.status,
+                "line": item.line,
+                "file": str(Path(finding.skill_dir) / item.name),
+            }
+            for item in finding.files
+        ],
+    }
+    if profile is not None:
+        payload["profile"] = profile
+    return payload
+
+
+def _counts(report: DoctorReport) -> dict[str, int]:
+    return {
+        kind: len(report.of_kind(kind))
+        for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
+    }
+
+
 def report_to_dict(
     report: DoctorReport,
     *,
@@ -670,30 +708,8 @@ def report_to_dict(
         "checked": report.checked,
         "clean": report.clean,
         "drift": len(report.drift),
-        "counts": {
-            kind: len(report.of_kind(kind))
-            for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
-        },
-        "findings": [
-            {
-                "kind": finding.kind,
-                "skill": finding.skill_name,
-                "target": finding.target_format.value,
-                "path": str(finding.skill_dir),
-                "file": str(Path(finding.skill_dir) / "SKILL.md"),
-                "detail": finding.detail,
-                "files": [
-                    {
-                        "name": item.name,
-                        "status": item.status,
-                        "line": item.line,
-                        "file": str(Path(finding.skill_dir) / item.name),
-                    }
-                    for item in finding.files
-                ],
-            }
-            for finding in report.findings
-        ],
+        "counts": _counts(report),
+        "findings": [_finding_dict(finding) for finding in report.findings],
     }
     if repair is not None:
         payload["fixed"] = {
@@ -702,5 +718,56 @@ def report_to_dict(
             "conversions": repair.conversions,
             "edited_left": repair.edited,
             "lossy_left": repair.lossy,
+        }
+    return payload
+
+
+def profiles_to_dict(
+    reports: dict[str, DoctorReport],
+    *,
+    repair: dict[str, RepairResult] | None = None,
+) -> dict[str, object]:
+    """Machine-readable view of one run over several profiles.
+
+    The same shape `report_to_dict` writes, with `profile` null, one entry per
+    profile in `profiles`, and every finding tagged with the profile it belongs
+    to. Totals cover the whole run, and a copy two profiles share is counted
+    once, under the profile that checked it.
+    """
+    totals = {kind: 0 for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)}
+    findings: list[dict[str, object]] = []
+    summaries: list[dict[str, object]] = []
+    for name, report in reports.items():
+        counts = _counts(report)
+        for kind, value in counts.items():
+            totals[kind] += value
+        findings.extend(_finding_dict(finding, name) for finding in report.findings)
+        summaries.append(
+            {
+                "profile": name,
+                "checked": report.checked,
+                "clean": report.clean,
+                "drift": len(report.drift),
+                "counts": counts,
+            }
+        )
+
+    payload: dict[str, object] = {
+        "report-version": REPORT_VERSION,
+        "profile": None,
+        "profiles": summaries,
+        "checked": sum(report.checked for report in reports.values()),
+        "clean": all(report.clean for report in reports.values()),
+        "drift": sum(len(report.drift) for report in reports.values()),
+        "counts": totals,
+        "findings": findings,
+    }
+    if repair is not None:
+        payload["fixed"] = {
+            "stale": sum(result.pruned for result in repair.values()),
+            "out_of_sync": sum(result.refreshed for result in repair.values()),
+            "conversions": sum(result.conversions for result in repair.values()),
+            "edited_left": sum(result.edited for result in repair.values()),
+            "lossy_left": sum(result.lossy for result in repair.values()),
         }
     return payload

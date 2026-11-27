@@ -26,6 +26,7 @@ from skill_bridge.config import (
     DEFAULT_CONFIG_NAME,
     BridgeConfig,
     SkillLocation,
+    SyncProfile,
     auto_import_config,
     forget_targets,
     init_config_interactive,
@@ -46,6 +47,8 @@ from skill_bridge.doctor import (
     RepairResult,
     accept_edits,
     diagnose,
+    diagnose_profiles,
+    profiles_to_dict,
     repair,
     report_schema,
     report_to_dict,
@@ -767,8 +770,83 @@ def uninstall_cmd(
             )
 
 
+def _source_label(prof: SyncProfile) -> str:
+    """What a profile reads from, for the header `doctor` prints."""
+    if prof.auto_sources:
+        return "auto (every other detected harness)"
+    locs = prof.sources or ([prof.source] if prof.source else [])
+    return ", ".join(f"{loc.format.value}:{loc.path}" for loc in locs)
+
+
+def _doctor_all_profiles(
+    profiles: list[SyncProfile],
+    *,
+    config_path: Path | None,
+    strict: bool,
+    fix: bool,
+    as_json: bool,
+    lock_timeout: float,
+) -> None:
+    """Check every profile in the config, counting each copy once.
+
+    Repairing is per profile, because `sync` and `sync --prune` take a profile
+    name; the re-check afterwards runs over all of them again, so the totals
+    describe the profile as it is now rather than as it was.
+    """
+    before = diagnose_profiles(profiles)
+    repairs: dict[str, RepairResult] = {}
+    after = before
+    if fix:
+        for name, report in before.items():
+            if not report.drift:
+                continue
+            repairs[name] = repair(
+                report,
+                profile_name=name,
+                config_path=config_path,
+                lock_wait=lock_timeout,
+            )
+        if repairs:
+            after = diagnose_profiles(profiles)
+
+    if as_json:
+        click.echo(json.dumps(profiles_to_dict(after, repair=repairs or None), indent=2))
+    else:
+        by_name = {profile.name: profile for profile in profiles}
+        for name, report in before.items():
+            console.print(
+                f"\n[bold]Profile:[/bold] {name}  "
+                f"[bold]sources:[/bold] {_source_label(by_name[name])}"
+            )
+            _print_doctor(report)
+            if report.reused_from:
+                shared = ", ".join(sorted(report.reused_from))
+                console.print(
+                    f"[dim]Copies shared with {shared} were already checked "
+                    "there.[/dim]"
+                )
+            if name in repairs:
+                _print_repair(repairs[name], after[name])
+        if len(before) > 1:
+            checked = sum(report.checked for report in after.values())
+            drift = sum(len(report.drift) for report in after.values())
+            console.print(
+                f"\n[bold]All profiles:[/bold] {checked} copy(ies) checked, "
+                f"{drift} with drift"
+            )
+
+    if strict and any(report.drift for report in after.values()):
+        raise SystemExit(1)
+
+
 @main.command("doctor")
 @click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
+@click.option(
+    "--all-profiles",
+    "all_profiles",
+    is_flag=True,
+    help="Check every profile in the config, not just one",
+)
 @click.option("-c", "--config", "config_path", type=click.Path(exists=True, path_type=Path), default=None)
 @click.option("--strict", is_flag=True, help="Exit 1 when a copy is stale or out of sync")
 @click.option("--fix", is_flag=True, help="Sync out-of-sync copies and prune stale ones")
@@ -788,6 +866,7 @@ def uninstall_cmd(
 )
 def doctor_cmd(
     profile: str | None,
+    all_profiles: bool,
     config_path: Path | None,
     strict: bool,
     fix: bool,
@@ -820,15 +899,31 @@ def doctor_cmd(
     reading a profile: it describes the format, so it has to work in a checkout
     that has not installed anything yet. The report carries report-version, and
     the schema is what that number refers to.
+
+    --all-profiles checks every profile in the config instead of one, and counts
+    each copy once even when two profiles name the same folder. --json then
+    carries a `profiles` summary and tags each finding with its profile, while
+    the totals cover the whole run; --strict and --fix apply to every profile.
     """
     if show_schema:
         click.echo(json.dumps(report_schema(), indent=2))
         return
 
+    if all_profiles and profile:
+        console.print("[red]--all-profiles checks every profile; drop --profile.[/red]")
+        raise SystemExit(1)
+
     load_exporters()
+    selected: list[SyncProfile] = []
+    prof: SyncProfile | None = None
     try:
         config = load_config(config_path)
-        prof = config.get_profile(profile)
+        if all_profiles:
+            selected = list(config.profiles.values())
+            if not selected:
+                raise KeyError("This config has no profiles to check.")
+        else:
+            prof = config.get_profile(profile)
     except KeyError as exc:
         message = str(exc.args[0]) if exc.args else str(exc)
         console.print(f"[red]{message}[/red]")
@@ -837,15 +932,21 @@ def doctor_cmd(
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1) from exc
 
-    if prof.auto_sources:
-        source_label = "auto (every other detected harness)"
-    else:
-        locs = prof.sources or ([prof.source] if prof.source else [])
-        source_label = ", ".join(f"{loc.format.value}:{loc.path}" for loc in locs)
+    if prof is None:
+        _doctor_all_profiles(
+            selected,
+            config_path=config_path,
+            strict=strict,
+            fix=fix,
+            as_json=as_json,
+            lock_timeout=lock_timeout,
+        )
+        return
+
     if not as_json:
         console.print(
             f"[bold]Profile:[/bold] {prof.name}  "
-            f"[bold]sources:[/bold] {source_label}"
+            f"[bold]sources:[/bold] {_source_label(prof)}"
         )
 
     report = diagnose(prof.targets)
