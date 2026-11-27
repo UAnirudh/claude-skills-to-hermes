@@ -416,6 +416,7 @@ def test_json_output_carries_the_findings_and_the_strict_exit_code(tmp_path):
     assert payload["clean"] is False
     assert payload["drift"] == 2
     assert payload["counts"] == {
+        "unfetched": 0,
         "stale": 0,
         "out-of-sync": 1,
         "edited": 1,

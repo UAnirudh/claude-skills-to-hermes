@@ -215,7 +215,19 @@ entries, so the size bound never evicts it. The checkout is keyed by the ref as
 well as the repository, so two profiles can read two refs of one repository
 without rewriting each other's files; changing a profile's `ref:` (or removing
 it, which reads the default branch) checks that ref out separately instead of
-reusing what another one left behind. `sync` fetches the configured ref
+reusing what another one left behind.
+
+Each copy records the repository, ref and folder it was read from. When the
+checkout is not on the machine — a fresh CI runner, or a cache that was cleared
+— those copies are reported as **not fetched** rather than as skills whose
+source was deleted, and `sync --prune` leaves them alone instead of deleting
+them. `skill-bridge fetch` (or the next `sync`) recreates the checkout at the
+same path and they compare normally again; a skill that really was removed from
+the repository is still reported as gone, and still pruned. Copies converted
+before this was recorded have no origin in their marker, so a missing checkout
+still reads the old way for them until the next sync writes it.
+
+`sync` fetches the configured ref
 before it reads, so a push reaches the harnesses on the next run; `watch` keeps
 reading the checkout it already has rather than fetching on every file event. A
 fetch that fails — a laptop offline, a remote that is down — keeps the last

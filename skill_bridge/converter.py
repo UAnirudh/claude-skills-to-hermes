@@ -87,6 +87,7 @@ def convert_skill(
     output_root: Path | None = None,
     *,
     validate: bool = True,
+    source_git: dict[str, str] | None = None,
 ) -> ConversionResult:
     load_exporters()
     bundle = load_skill(source)
@@ -116,6 +117,7 @@ def convert_skill(
             source_path=bundle.root,
             source_hash=source_hash,
             output_hash=tree_hash(result.output_dir),
+            source_git=source_git,
         )
         final_dir = out / Path(result.output_dir).relative_to(holder)
         _swap_into_place(Path(result.output_dir), final_dir, holder=holder)

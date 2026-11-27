@@ -16,10 +16,11 @@ from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.prune import (
     PruneOutcome,
     apply_removals,
+    pending_fetch,
     plan_removals,
     source_disappeared,
 )
-from skill_bridge.remote import checkout
+from skill_bridge.remote import checkout, checkout_dir
 from skill_bridge.utils import slugify_name
 
 load_exporters()
@@ -82,6 +83,27 @@ def _local(loc: SkillLocation, *, refresh: bool = False) -> SkillLocation:
     return replace(loc, path=checkout(loc.git, refresh=refresh))
 
 
+def _git_origin(loc: SkillLocation, skill_dir: Path) -> dict[str, str] | None:
+    """The repository record a copy converted from ``loc`` should carry.
+
+    The checkout root is derived from the repository and ref alone, so the
+    path inside it is what identifies the skill after a fetch recreates the
+    tree at the same place.
+    """
+    if loc.git is None:
+        return None
+    try:
+        inner = Path(os.path.relpath(skill_dir, checkout_dir(loc.git))).as_posix()
+    except ValueError:  # different drives on Windows
+        return None
+    if inner.startswith(".."):
+        return None  # not inside its own checkout: nothing to record
+    origin = {"url": loc.git.url, "path": inner}
+    if loc.git.ref:
+        origin["ref"] = loc.git.ref
+    return origin
+
+
 def _skills_matching(root: Path, skill_name: str) -> list[Path]:
     """Skill directories ``root`` holds for a name or alias like ``My Skill``.
 
@@ -126,6 +148,10 @@ def collect_source_skills(
             if real in seen_paths:
                 continue
             seen_paths.add(real)
+            if pending_fetch(skill_dir) is not None:
+                # Its repository is not checked out, so the copy is all there
+                # is: converting it onward would keep stale content alive.
+                continue
             if source_disappeared(skill_dir):
                 # A copy whose source is gone must not feed the sync back into
                 # another harness (which would resurrect a deleted skill).
@@ -202,6 +228,7 @@ def sync_profile(
 
     results: list[ConversionResult] = []
     for loc, skill_dir in entries:
+        origin = _git_origin(loc, skill_dir)
         for target in profile.targets:
             if (
                 target.format == loc.format
@@ -214,6 +241,7 @@ def sync_profile(
                     target.format,
                     target.path,
                     validate=profile.validate,
+                    source_git=origin,
                 )
             )
     return results

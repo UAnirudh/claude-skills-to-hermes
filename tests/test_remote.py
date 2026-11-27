@@ -30,9 +30,13 @@ from skill_bridge.config import (
     load_config,
     save_config,
 )
+from skill_bridge.diff import diff_profile
+from skill_bridge.doctor import UNFETCHED, diagnose
 from skill_bridge.models import AgentFormat
+from skill_bridge.provenance import read_marker
+from skill_bridge.prune import pending_fetch, plan_removals, source_disappeared
 from skill_bridge.remote import GitSource, RemoteError, checkout, checkout_dir
-from skill_bridge.sync import run_sync, sync_profile
+from skill_bridge.sync import collect_source_skills, run_sync, sync_profile
 from skill_bridge.watch import watch_roots
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
@@ -808,3 +812,152 @@ def test_a_token_variable_round_trips_through_a_profile(tmp_path, monkeypatch):
     assert "token_env: GITHUB_TOKEN" in text
     assert "token_user: oauth2" in text
     assert "ghp_secretvalue" not in text
+
+
+# --- where a copy came from ------------------------------------------------
+
+
+def sync_one(repo: Path, tmp_path: Path, *, ref: str | None = None) -> Path:
+    """Sync ``repo`` into ``tmp_path/target`` and return that directory."""
+    target = tmp_path / "target"
+    source: dict[str, str] = {
+        "format": "claude-code",
+        "git": str(repo),
+        "path": "skills",
+    }
+    if ref:
+        source["ref"] = ref
+    path = write_profile(
+        tmp_path,
+        sources=[source],
+        targets=[{"format": "hermes", "path": str(target)}],
+    )
+    sync_profile(load_config(path).get_profile(None))
+    return target
+
+
+def lose_the_checkout(tmp_path: Path, repo: Path, *, ref: str | None = None) -> None:
+    """Make the cache look like a machine that never fetched it.
+
+    Renamed rather than removed: git leaves read-only files behind on Windows,
+    and the point is that the path is not there any more.
+    """
+    checkout_dir(git_source(repo, ref=ref)).rename(tmp_path / "checked-out-away")
+
+
+def test_a_copy_records_the_repository_it_came_from(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path)
+
+    origin = read_marker(target / "code-review")["source-git"]
+
+    assert origin == {"url": str(repo), "path": "skills/code-review"}
+
+
+def test_the_origin_records_the_ref_too(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path, ref="main")
+
+    origin = read_marker(target / "code-review")["source-git"]
+
+    assert origin["ref"] == "main"
+    assert origin["url"] == str(repo)
+
+
+def test_a_missing_checkout_is_waiting_rather_than_stale(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path)
+    copy = target / "code-review"
+    lose_the_checkout(tmp_path, repo)
+
+    assert pending_fetch(copy) == checkout_dir(git_source(repo))
+    assert source_disappeared(copy) is None
+
+
+def test_prune_leaves_a_copy_waiting_for_its_repository(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path)
+    lose_the_checkout(tmp_path, repo)
+
+    plan = plan_removals([SkillLocation(format=AgentFormat.HERMES, path=target)])
+
+    assert plan.items == []
+    assert [path.name for path in plan.pending] == ["code-review"]
+    assert (target / "code-review" / "SKILL.md").is_file()
+
+
+def test_doctor_calls_a_missing_checkout_not_fetched(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path)
+    lose_the_checkout(tmp_path, repo)
+
+    report = diagnose([SkillLocation(format=AgentFormat.HERMES, path=target)])
+
+    assert [finding.kind for finding in report.findings] == [UNFETCHED]
+    assert str(repo) in report.findings[0].detail
+    # Not drift: nothing here proves the copy is behind its source.
+    assert report.drift == []
+
+
+def test_fetching_makes_the_same_copy_compare_normally(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path)
+    lose_the_checkout(tmp_path, repo)
+    locations = [SkillLocation(format=AgentFormat.HERMES, path=target)]
+    assert diagnose(locations).of_kind(UNFETCHED)
+
+    checkout(git_source(repo))  # what `skill-bridge fetch` does
+
+    assert diagnose(locations).findings == []
+
+
+def test_a_skill_removed_upstream_is_still_stale(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path)
+    copy = target / "code-review"
+    shutil.rmtree(repo / "skills" / "code-review")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "drop the skill")
+
+    checkout(git_source(repo), refresh=True)
+
+    assert pending_fetch(copy) is None  # the checkout is there, the skill is not
+    assert source_disappeared(copy) is not None
+
+
+def test_a_copy_waiting_for_its_repository_does_not_feed_a_sync(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path)
+    lose_the_checkout(tmp_path, repo)
+
+    entries = collect_source_skills(
+        [SkillLocation(format=AgentFormat.HERMES, path=target)]
+    )
+
+    assert entries == []
+
+
+def test_diff_has_nothing_to_show_while_the_repository_is_unfetched(tmp_path):
+    repo = make_repo(tmp_path)
+    target = sync_one(repo, tmp_path)
+    lose_the_checkout(tmp_path, repo)
+
+    report = diff_profile([SkillLocation(format=AgentFormat.HERMES, path=target)])
+
+    assert report.checked == 1
+    assert (report.diffs, report.problems) == ([], [])
+
+
+def test_doctor_prints_not_fetched_with_the_command_that_helps(tmp_path):
+    repo = make_repo(tmp_path)
+    sync_one(repo, tmp_path)
+    lose_the_checkout(tmp_path, repo)
+
+    result = CliRunner().invoke(
+        main, ["doctor", "-c", str(tmp_path / "skill-bridge.yaml")]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Not fetched" in result.output
+    assert "skill-bridge fetch" in result.output
+    assert "Source gone" not in result.output

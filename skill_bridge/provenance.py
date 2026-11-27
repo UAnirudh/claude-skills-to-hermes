@@ -175,6 +175,7 @@ def write_marker(
     source_path: Path | None = None,
     source_hash: str | None = None,
     output_hash: str | None = None,
+    source_git: dict[str, Any] | None = None,
 ) -> Path:
     if not Path(skill_dir).is_dir():
         return marker_path(skill_dir)
@@ -194,6 +195,11 @@ def write_marker(
         data["source-sha"] = source_hash
     if output_hash is not None:
         data["output-sha"] = output_hash
+    if source_git:
+        # The repository, ref and inner path this copy was read from. It is what
+        # lets a copy whose checkout is not on the machine say "not fetched
+        # yet" instead of looking like a skill whose source was deleted.
+        data["source-git"] = dict(source_git)
     return _dump_marker(skill_dir, data)
 
 

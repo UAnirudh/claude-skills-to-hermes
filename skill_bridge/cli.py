@@ -44,6 +44,7 @@ from skill_bridge.doctor import (
     OUTDATED,
     OUT_OF_SYNC,
     STALE,
+    UNFETCHED,
     DoctorReport,
     RepairResult,
     accept_edits,
@@ -114,6 +115,11 @@ def _print_removals(
             f"[dim]Left {len(plan.kept_native)} hand-written skill(s) alone."
             "[/dim]"
         )
+    if plan.pending:
+        console.print(
+            f"{WARN} {len(plan.pending)} copy(ies) wait for a repository that is "
+            "not checked out; run skill-bridge fetch before pruning."
+        )
     if not plan.items:
         console.print("[dim]Nothing to remove.[/dim]")
         return
@@ -134,6 +140,12 @@ def _print_removals(
 
 
 DOCTOR_SECTIONS = (
+    (
+        UNFETCHED,
+        "Not fetched",
+        "skill-bridge fetch checks these repositories out",
+        "bright_black",
+    ),
     (STALE, "Source gone", "skill-bridge sync --prune removes these", "red"),
     (OUT_OF_SYNC, "Out of sync", "--fix refreshes these from their source", "yellow"),
     (
@@ -159,6 +171,7 @@ def _print_doctor(report: DoctorReport) -> None:
                 f"  [{colour}]{finding.skill_name}[/{colour}] "
                 f"({finding.target_format.value}) [dim]{finding.detail}[/dim]"
             )
+    unfetched = len(report.of_kind(UNFETCHED))
     stale = len(report.of_kind(STALE))
     behind = len(report.of_kind(OUT_OF_SYNC))
     outdated = len(report.of_kind(OUTDATED))
@@ -170,10 +183,20 @@ def _print_doctor(report: DoctorReport) -> None:
             f"{OK} {report.checked} generated copy(ies) checked, nothing to fix."
         )
         return
+    parts = [
+        f"{stale} stale",
+        f"{behind} out of sync",
+        f"{outdated} outdated",
+        f"{edited} edited",
+        f"{lossy} lossy",
+    ]
+    if unfetched:
+        # Named only when it happened: a machine that has every checkout does
+        # not need a zero about a state it is not in.
+        parts.insert(0, f"{unfetched} not fetched")
     console.print(
         f"[bold]Checked {report.checked} generated copy(ies):[/bold] "
-        f"{stale} stale, {behind} out of sync, {outdated} outdated, "
-        f"{edited} edited, {lossy} lossy"
+        + ", ".join(parts)
     )
 
 

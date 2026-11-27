@@ -20,7 +20,7 @@ from skill_bridge.doctor import CHANGED, EXTRA, MISSING
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills
 from skill_bridge.provenance import is_bridge_generated, tree_files, tree_hash
-from skill_bridge.prune import recorded_source, source_disappeared
+from skill_bridge.prune import pending_fetch, recorded_source, source_disappeared
 
 
 @dataclass(frozen=True)
@@ -127,6 +127,8 @@ def diff_profile(
             seen_dirs.add(real)
             report.checked += 1
 
+            if pending_fetch(skill_dir) is not None:
+                continue  # repository not fetched: nothing to compare yet
             if source_disappeared(skill_dir) is not None:
                 continue  # nothing left to convert: `sync --prune` is the answer
             source = recorded_source(skill_dir)

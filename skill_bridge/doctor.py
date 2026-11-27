@@ -40,10 +40,13 @@ from skill_bridge.provenance import (
     tree_files,
     tree_hash,
 )
-from skill_bridge.prune import recorded_source, source_disappeared
+from skill_bridge.prune import git_origin, pending_fetch, recorded_source, source_disappeared
 from skill_bridge.sync import run_prune, run_sync
 
 STALE = "stale"
+#: The copy came from a repository that is not checked out on this machine, so
+#: there is nothing to compare yet. Not drift: the next fetch brings it back.
+UNFETCHED = "unfetched"
 OUT_OF_SYNC = "out-of-sync"
 EDITED = "edited"
 LOSSY = "lossy"
@@ -344,6 +347,20 @@ class _Pass:
         skill_dir: Path, target: AgentFormat, report: DoctorReport
     ) -> None:
         """Add this copy's findings, in the order they are worth reading."""
+        if pending_fetch(skill_dir) is not None:
+            origin = git_origin(skill_dir)
+            where = origin[0].label if origin else "its repository"
+            report.findings.append(
+                Finding(
+                    UNFETCHED,
+                    skill_dir.name,
+                    target,
+                    skill_dir,
+                    f"{where} is not checked out yet",
+                )
+            )
+            return
+
         reason = source_disappeared(skill_dir)
         if reason is not None:
             report.findings.append(
@@ -532,7 +549,14 @@ def report_schema() -> dict[str, object]:
             "required": [STALE, OUT_OF_SYNC, EDITED, LOSSY],
             "properties": {
                 kind: count
-                for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
+                for kind in (
+                    UNFETCHED,
+                    STALE,
+                    OUT_OF_SYNC,
+                    EDITED,
+                    LOSSY,
+                    OUTDATED,
+                )
             },
         }
 
@@ -669,7 +693,7 @@ def _finding_dict(
 def _counts(report: DoctorReport) -> dict[str, int]:
     return {
         kind: len(report.of_kind(kind))
-        for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
+        for kind in (UNFETCHED, STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
     }
 
 
@@ -717,7 +741,9 @@ def profiles_to_dict(
     to. Totals cover the whole run, and a copy two profiles share is counted
     once, under the profile that checked it.
     """
-    totals = {kind: 0 for kind in (STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)}
+    totals = {
+        kind: 0 for kind in (UNFETCHED, STALE, OUT_OF_SYNC, EDITED, LOSSY, OUTDATED)
+    }
     findings: list[dict[str, object]] = []
     summaries: list[dict[str, object]] = []
     for name, report in reports.items():
