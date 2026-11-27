@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from skill_bridge.agent_paths import detect_installed_agents, resolve_skill_path
@@ -18,6 +19,7 @@ from skill_bridge.prune import (
     plan_removals,
     source_disappeared,
 )
+from skill_bridge.remote import checkout
 from skill_bridge.utils import slugify_name
 
 load_exporters()
@@ -46,8 +48,16 @@ def _detected_sources(
     return found
 
 
-def profile_sources(profile: SyncProfile, *, project: Path | None = None) -> list[SkillLocation]:
-    """Resolve a profile's source harnesses, expanding ``sources: auto``."""
+def profile_sources(
+    profile: SyncProfile, *, project: Path | None = None, refresh: bool = False
+) -> list[SkillLocation]:
+    """Resolve a profile's source harnesses, expanding ``sources: auto``.
+
+    A source that lives in git is checked out first and replaced by a location
+    pointing at that checkout, so everything downstream reads a directory and
+    never has to know where it came from. ``refresh`` asks each repository for
+    its current commit; see `remote.checkout` for why that is not the default.
+    """
     if profile.auto_sources:
         target_formats = {t.format for t in profile.targets}
         # A single-target profile imports from every *other* harness. A
@@ -61,8 +71,15 @@ def profile_sources(profile: SyncProfile, *, project: Path | None = None) -> lis
             if not (skip_targets and fmt in target_formats)
         ]
     if profile.sources:
-        return list(profile.sources)
-    return [profile.source] if profile.source else []
+        return [_local(loc, refresh=refresh) for loc in profile.sources]
+    return [_local(profile.source, refresh=refresh)] if profile.source else []
+
+
+def _local(loc: SkillLocation, *, refresh: bool = False) -> SkillLocation:
+    """``loc`` with a real directory, checking a git source out if needed."""
+    if loc.git is None:
+        return loc
+    return replace(loc, path=checkout(loc.git, refresh=refresh))
 
 
 def _skills_matching(root: Path, skill_name: str) -> list[Path]:
@@ -167,19 +184,20 @@ def sync_profile(
     for target in profile.targets:
         sweep_stale_holders(target.path)
 
-    sources = profile_sources(profile)
+    sources = profile_sources(profile, refresh=True)
     if not sources:
         raise FileNotFoundError(
             "No source harness found. Install or author skills somewhere first, "
-            "or point 'sources' at a directory in skill-bridge.yaml"
+            "or point 'sources' at a directory or a git repository in "
+            "skill-bridge.yaml"
         )
 
     entries = collect_source_skills(sources, skill_name=skill_name)
     if not entries:
         if skill_name:
-            listed = ", ".join(str(s.path) for s in sources)
+            listed = ", ".join(s.describe() for s in sources)
             raise FileNotFoundError(f"Skill '{skill_name}' not found in: {listed}")
-        listed = ", ".join(str(s.path) for s in sources)
+        listed = ", ".join(s.describe() for s in sources)
         raise FileNotFoundError(f"No skills under: {listed}")
 
     results: list[ConversionResult] = []

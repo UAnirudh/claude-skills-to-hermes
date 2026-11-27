@@ -59,6 +59,7 @@ from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
 from skill_bridge.provenance import is_bridge_generated, read_marker
 from skill_bridge.prune import RemovalPlan, RemovalItem, apply_removals, plan_removals
+from skill_bridge.remote import RemoteError, checkout
 from skill_bridge.sync import reverse_convert, run_prune, run_sync
 from skill_bridge.validator import validate_skill
 from skill_bridge.watch import watch_from_config, watch_roots
@@ -776,7 +777,7 @@ def _source_label(prof: SyncProfile) -> str:
     if prof.auto_sources:
         return "auto (every other detected harness)"
     locs = prof.sources or ([prof.source] if prof.source else [])
-    return ", ".join(f"{loc.format.value}:{loc.path}" for loc in locs)
+    return ", ".join(loc.describe() for loc in locs)
 
 
 def _doctor_all_profiles(
@@ -1499,7 +1500,7 @@ def sync_cmd(
         source_label = "auto (every other detected harness)"
     else:
         locs = prof.sources or ([prof.source] if prof.source else [])
-        source_label = ", ".join(f"{loc.format.value}:{loc.path}" for loc in locs)
+        source_label = ", ".join(loc.describe() for loc in locs)
     console.print(f"[bold]Profile:[/bold] {prof.name}  [bold]sources:[/bold] {source_label}")
 
     results = []
@@ -1513,8 +1514,8 @@ def sync_cmd(
                 skill_name=skill_name,
                 lock_wait=lock_timeout,
             )
-        except FileNotFoundError as exc:
-            if not prune:
+        except (FileNotFoundError, RemoteError) as exc:
+            if not prune or isinstance(exc, RemoteError):
                 console.print(f"[red]{exc}[/red]")
                 raise SystemExit(1) from exc
             # Nothing left to import is exactly when pruning matters most.
@@ -1548,6 +1549,52 @@ def sync_cmd(
         action="prune",
         dry_run_action="would prune",
     )
+
+
+@main.command("fetch")
+@click.option("--profile", default=None, help="Profile name from skill-bridge.yaml")
+@click.option("-c", "--config", type=click.Path(exists=True, path_type=Path), default=None)
+@click.option(
+    "--refresh",
+    is_flag=True,
+    help="Fetch each remote's current commit instead of reusing the checkout",
+)
+def fetch_cmd(profile: str | None, config: Path | None, refresh: bool) -> None:
+    """Check out the profile's git sources and print where they landed.
+
+    `sync` does this itself; the command exists to make the checkout
+    discoverable — which copy of a skill a run reads, and where to look when a
+    ref stops resolving.
+    """
+    try:
+        cfg = load_config(config)
+        prof = cfg.get_profile(profile)
+    except KeyError as exc:
+        message = str(exc.args[0]) if exc.args else str(exc)
+        console.print(f"[red]{message}[/red]")
+        raise SystemExit(1) from exc
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1) from exc
+
+    locs = prof.sources or ([prof.source] if prof.source else [])
+    git_locs = [loc for loc in locs if loc.git is not None]
+    if not git_locs:
+        console.print(f"[dim]Profile '{prof.name}' has no git sources.[/dim]")
+        return
+
+    for loc in git_locs:
+        assert loc.git is not None
+        try:
+            path = checkout(loc.git, refresh=refresh)
+        except RemoteError as exc:
+            console.print(f"[red]{loc.git.label}[/red]")
+            console.print(f"  {exc}")
+            raise SystemExit(1) from exc
+        console.print(f"{loc.format.value:<14} {loc.git.label}")
+        console.print(f"  {ARROW} {path}")
+
+    console.print(f"\n[bold]{len(git_locs)} git source(s) ready[/bold]")
 
 
 @main.command("watch")

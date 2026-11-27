@@ -43,6 +43,10 @@ CACHE_ENV = "SKILL_BRIDGE_CACHE_DIR"
 #: Written last inside an entry, so its presence means the entry is complete.
 MANIFEST = ".cache-key.json"
 
+#: Checkouts of git skill sources live here, beside the entries and are never
+#: evicted by the size bound: they are sources, not conversions to redo.
+GIT_DIR = "git"
+
 #: Bytes of stored conversions kept before the entries used longest ago are
 #: dropped. The bound is a size rather than a count of entries because one
 #: conversion is a few kilobytes: a profile with hundreds of copies fits, where
@@ -215,13 +219,23 @@ def expected_files(
     return expected, None
 
 
+def _entry_name(name: str) -> bool:
+    """True for a directory name this module wrote as an entry key."""
+    return len(name) == 64 and all(c in "0123456789abcdef" for c in name)
+
+
 def _entries(root: Path) -> list[Path]:
-    """Complete entries, ignoring temporary ones still being written."""
+    """Complete entries, ignoring temporary ones still being written.
+
+    Only key-shaped directories count: the git checkouts kept beside the
+    entries are sources, and dropping one to make room for a conversion would
+    cost a clone rather than a conversion.
+    """
     try:
         return [
             path
             for path in root.iterdir()
-            if path.is_dir() and not path.name.startswith(".")
+            if path.is_dir() and not path.name.startswith(".") and _entry_name(path.name)
         ]
     except OSError:
         return []

@@ -191,6 +191,39 @@ what you just removed. Pass `--config PATH` when the profile lives somewhere
 `--stale-only` leaves the profile alone: that harness is still meant to
 receive skills.
 
+### Skills that live in a git repository
+
+A source can be a repository instead of a directory, so a team keeps one
+checked-in set of skills and every harness reads it from there:
+
+```yaml
+  team-repo:
+    sources:
+      - format: claude-code
+        git: https://github.com/acme/agent-skills.git
+        ref: main          # branch, tag or commit; the default branch if omitted
+        path: skills       # folder inside the repository; its root if omitted
+    targets:
+      - format: hermes
+        path: ~/.hermes/skills
+```
+
+`https://host/repo#main` means the same as `git:` plus `ref: main`. The
+repository is cloned once into `~/.cache/skill-bridge/git` (moved by
+`SKILL_BRIDGE_CACHE_DIR`) and that checkout is kept apart from the conversion
+entries, so the size bound never evicts it. `sync` fetches the configured ref
+before it reads, so a push reaches the harnesses on the next run; `watch` keeps
+reading the checkout it already has rather than fetching on every file event. A
+fetch that fails — a laptop offline, a remote that is down — keeps the last
+checkout and warns, so the run still converts what it converted last time.
+`skill-bridge fetch` checks the sources out and prints where each one landed,
+which is the copy a run reads (`--refresh` fetches current commits first).
+
+Git runs with terminal prompts disabled, so a private repository needs
+credentials git can use without asking: an ssh key, a credential helper, or a
+token in the URL (`https://<token>@github.com/...`). Without one the run fails
+with a message saying so instead of hanging on a password prompt.
+
 `skill-bridge doctor` checks the whole profile in one read-only pass and groups
 what it finds: copies whose source is gone (`sync --prune` fixes those), copies
 that no longer match their source or were edited after being written (both
@@ -368,6 +401,7 @@ skill-bridge lint <skill-dir> [--harness <fmt>] [--matrix]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]] [--lock-timeout S]
+skill-bridge fetch [--profile NAME] [-c PATH] [--refresh]   # check out the profile's git sources
 skill-bridge doctor [--profile NAME | --all-profiles] [-c PATH] [--strict] [--fix] [--json [--schema]] [--lock-timeout S]
 skill-bridge accept [--profile NAME] [-c PATH] [--skill NAME] [--lock-timeout S]
 skill-bridge annotate [--report FILE|-] [--format github|sarif] [--profile NAME] [-c PATH]

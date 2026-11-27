@@ -12,6 +12,7 @@ import yaml
 
 from skill_bridge.agent_paths import expand_path, global_skill_root, resolve_skill_path
 from skill_bridge.models import AgentFormat
+from skill_bridge.remote import GitSource
 
 DEFAULT_CONFIG_NAME = "skill-bridge.yaml"
 AUTO_SOURCE_TOKENS = {"auto", "all", "*"}
@@ -21,17 +22,39 @@ AUTO_SOURCE_TOKENS = {"auto", "all", "*"}
 class SkillLocation:
     format: AgentFormat
     path: Path
-    scope: str = "global"  # global | project | custom
+    scope: str = "global"  # global | project | custom | remote
+    #: Set on a source that lives in git. `path` is a placeholder until the
+    #: checkout happens: `sync.profile_sources` fills in where it landed.
+    git: GitSource | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | str, project: Path | None = None) -> SkillLocation:
         if isinstance(data, str):
             data = {"format": data}
         fmt = AgentFormat.from_string(str(data["format"]))
+        if data.get("git"):
+            # A git source is read through its checkout in the cache, so there
+            # is no directory to resolve here: cloning while parsing would make
+            # every config read — `detect`, `doctor --schema`, a watch start —
+            # depend on the network.
+            return cls(
+                format=fmt,
+                path=Path("."),
+                scope="remote",
+                git=GitSource.parse(
+                    data["git"],
+                    ref=data.get("ref"),
+                    subdir=data.get("path") or data.get("subdir"),
+                ),
+            )
         scope = str(data.get("scope", "custom" if data.get("path") else "global"))
         path_raw = data.get("path")
         path = resolve_skill_path(fmt, scope=scope, project=project, override=path_raw)
         return cls(format=fmt, path=path, scope=scope)
+
+    def describe(self) -> str:
+        """How this location is named in messages and profile headers."""
+        return f"{self.format.value}:{self.git.label}" if self.git else f"{self.format.value}:{self.path}"
 
 
 @dataclass
@@ -73,7 +96,7 @@ class SyncProfile:
         return cls(
             name=name,
             source=source,
-            targets=[SkillLocation.from_dict(t, project=project) for t in data.get("targets", [])],
+            targets=_targets(name, data.get("targets", []), project),
             sources=sources,
             auto_sources=auto_sources,
             source_scope=str(data.get("scope", "global")),
@@ -118,12 +141,30 @@ def _dedupe_locations(locations: Iterable[SkillLocation]) -> list[SkillLocation]
     unique: list[SkillLocation] = []
     seen: set[str] = set()
     for loc in locations:
-        key = os.path.realpath(loc.path)
+        # A git source has no directory until it is checked out, so its
+        # identity is the repository and ref rather than a placeholder path.
+        key = f"git:{loc.git.url}#{loc.git.ref}" if loc.git else os.path.realpath(loc.path)
         if key in seen:
             continue
         seen.add(key)
         unique.append(loc)
     return unique
+
+
+def _targets(
+    profile: str, raw: Iterable[dict[str, Any] | str], project: Path | None
+) -> list[SkillLocation]:
+    """Parse a profile's targets, which have to be directories we can write."""
+    targets: list[SkillLocation] = []
+    for item in raw:
+        loc = SkillLocation.from_dict(item, project=project)
+        if loc.git is not None:
+            raise ValueError(
+                f"Profile '{profile}': a target must be a local directory; "
+                "'git:' is only for sources"
+            )
+        targets.append(loc)
+    return targets
 
 
 def auto_import_config(
@@ -261,6 +302,13 @@ def config_to_dict(
 ) -> dict[str, Any]:
     def loc_dict(loc: SkillLocation) -> dict[str, Any]:
         d: dict[str, Any] = {"format": loc.format.value}
+        if loc.git is not None:
+            d["git"] = loc.git.url
+            if loc.git.ref:
+                d["ref"] = loc.git.ref
+            if loc.git.subdir:
+                d["path"] = loc.git.subdir
+            return d
         if loc.scope != "global":
             d["scope"] = loc.scope
         # Always write explicit path for clarity in user configs

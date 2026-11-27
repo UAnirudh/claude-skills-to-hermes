@@ -61,6 +61,19 @@ profiles:
     watch: true
     validate: true
 
+  # Skills that live in a git repository: cloned once, fetched by `sync`
+  team-repo:
+    sources:
+      - format: claude-code
+        git: https://github.com/acme/agent-skills.git
+        ref: main          # branch, tag or commit; default branch if omitted
+        path: skills       # folder inside the repo; its root if omitted
+    targets:
+      - format: hermes
+        path: ~/.hermes/skills
+    watch: true
+    validate: true
+
   # Project-scoped skills checked into your repo
   project:
     source:
