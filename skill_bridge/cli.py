@@ -36,6 +36,7 @@ from skill_bridge.config import (
 )
 from skill_bridge.converter import convert_batch, convert_skill
 from skill_bridge.diff import diff_profile, render as render_diff
+from skill_bridge.lint import lint_matrix, lint_skill
 from skill_bridge.locking import DEFAULT_LOCK_WAIT, LockTimeout
 from skill_bridge.doctor import (
     EDITED,
@@ -56,7 +57,7 @@ from skill_bridge.doctor import (
 from skill_bridge.formats.base import all_exporters, get_exporter, load_exporters
 from skill_bridge.models import AgentFormat
 from skill_bridge.parser import find_skills, load_skill
-from skill_bridge.provenance import is_bridge_generated
+from skill_bridge.provenance import is_bridge_generated, read_marker
 from skill_bridge.prune import RemovalPlan, RemovalItem, apply_removals, plan_removals
 from skill_bridge.sync import reverse_convert, run_prune, run_sync
 from skill_bridge.validator import validate_skill
@@ -1270,6 +1271,75 @@ def validate_cmd(source: Path, harness: str | None, fail_on_lossy: bool) -> None
 
     if not report.ok:
         raise SystemExit(1)
+
+
+@main.command("lint")
+@click.argument("path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--harness", default=None, help="Format the copy was written for (default: its marker)")
+@click.option("--matrix", "as_matrix", is_flag=True, help="Convert to every format and lint each result")
+def lint_cmd(path: Path, harness: str | None, as_matrix: bool) -> None:
+    """Check a converted copy against the harness it was written for.
+
+    `validate` asks whether a skill is valid Agent Skills; this asks whether
+    the output is what one harness reads. A field only another harness
+    understands is reported instead of silently ignored, `allowed-tools` must
+    have the shape that harness documents (a list for Devin, a string
+    elsewhere), Hermes needs its `## When to Use` section, and anything parked
+    in metadata.skill-bridge.extra must be something the harness cannot
+    express.
+
+    The format comes from the copy's provenance marker, or from --harness.
+    --matrix converts the given skill into all 17 formats and lints each
+    result, which is how the exporter matrix is checked end to end.
+    """
+    if as_matrix:
+        reports = lint_matrix(path)
+        failed = 0
+        for fmt, report in reports.items():
+            errors, warnings = len(report.errors()), len(report.warnings())
+            state = "ok" if report.ok else "failed"
+            console.print(
+                f"{state:<7}{fmt.value:<14}{errors} error(s), {warnings} warning(s)"
+            )
+            for issue in report.issues:
+                color = "red" if issue.level == "error" else "yellow"
+                console.print(
+                    f"  [{color}]{issue.level}[/] [{issue.rule}] {issue.message}"
+                )
+            failed += 0 if report.ok else 1
+        console.print(
+            f"\n[bold]{len(reports)} format(s) checked, {failed} failed.[/bold]"
+        )
+        if failed:
+            raise SystemExit(1)
+        return
+
+    target = _lint_format(path, harness)
+    report = lint_skill(path, target)
+    for issue in report.issues:
+        color = "red" if issue.level == "error" else "yellow"
+        console.print(f"[{color}]{issue.level.upper()}[/] {issue.rule}: {issue.message}")
+    if report.ok:
+        console.print(f"{OK} {path.name} is what {target.value} expects")
+    if not report.ok:
+        raise SystemExit(1)
+
+
+def _lint_format(path: Path, harness: str | None) -> AgentFormat:
+    """The format to lint a copy against: --harness, or its marker."""
+    if harness:
+        return _parse_format(harness)
+    recorded = read_marker(path).get("target-format")
+    if recorded:
+        try:
+            return AgentFormat(str(recorded))
+        except ValueError:
+            pass
+    console.print(
+        "[red]No provenance marker here: pass --harness with the format "
+        "this copy is for.[/red]"
+    )
+    raise SystemExit(1)
 
 
 @main.command("convert")

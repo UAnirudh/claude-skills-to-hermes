@@ -72,6 +72,29 @@ jobs:
             test -f "$expected" || { echo "missing $expected"; exit 1; }
           done
 
+      # Every exporter is checked against the format it writes: fields another
+      # harness reads stay out of the top level, allowed-tools keeps the shape
+      # that harness documents, and Hermes keeps its section and block.
+      - name: Lint the exporter matrix
+        shell: bash
+        run: |
+          skill-bridge lint --matrix examples/source-claude-code/code-review > matrix.txt
+          test "$(grep -c '^ok ' matrix.txt)" -eq 17 || { cat matrix.txt; exit 1; }
+          grep -q '^ok .*hermes ' matrix.txt
+          rm -rf .ci-lint
+          skill-bridge convert examples/source-claude-code/code-review \
+            --to codex -o .ci-lint
+          copy=$(dirname "$(find .ci-lint -maxdepth 8 -name SKILL.md -print -quit)")
+          skill-bridge lint "$copy" | grep -q 'is what codex expects'
+          # A Codex copy parks `origin`, which Claude Code reads: checking it
+          # against the wrong harness must fail rather than pass silently.
+          if skill-bridge lint "$copy" --harness claude-code > wrong.txt 2>&1; then
+            echo "a copy checked against the wrong harness passed"
+            exit 1
+          fi
+          grep -q 'origin' wrong.txt
+          echo "exporter lint matrix passed"
+
       # Project-scope import: every path is relative to the working directory,
       # so this runs the same on Linux, macOS and Windows. (The global-scope
       # flavour below needs HOME, which Python ignores on Windows.)

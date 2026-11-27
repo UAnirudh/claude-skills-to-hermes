@@ -364,6 +364,7 @@ skill-bridge detect [--scope global|project|both]   # every harness + whether it
 skill-bridge list-formats
 skill-bridge inspect <skill-dir>
 skill-bridge validate <skill-dir> [--harness <fmt> [--fail-on-lossy]]
+skill-bridge lint <skill-dir> [--harness <fmt>] [--matrix]
 skill-bridge convert <path> --to <format> [--to ...] [-o output]
 skill-bridge reverse --from <fmt> --to <fmt> [--scope global|project]
 skill-bridge sync [--profile NAME] [--skill NAME] [--prune [--dry-run]] [--lock-timeout S]
@@ -413,6 +414,17 @@ so `Devin (triggers: [model]) → Codex → Claude Code` still comes back as
 `skill-bridge validate <skill-dir> --harness <fmt>` to see which fields that
 harness cannot express natively, and add `--fail-on-lossy` to make it a CI
 error.
+
+`skill-bridge lint <skill-dir>` checks the other direction: not whether a skill
+is valid Agent Skills, but whether the copy is what one harness reads. The
+format comes from the copy's provenance marker (`--harness` overrides it), and
+the report names a field only another harness understands, `allowed-tools` in
+the wrong shape (a YAML list for Devin, a space-separated string elsewhere), a
+`reference/` folder that should be `references/`, a carrier entry duplicating a
+field the harness reads at the top level, or Hermes output without its
+`## When to Use` section and `metadata.hermes` block. `--matrix` converts the
+skill into all 17 formats and lints each result, which is how the exporters are
+checked against the formats they write.
 
 Source detection is just as broad: skills are attributed to a harness by any of
 its install layouts, including the user-level ones (`~/.config/devin/skills`,

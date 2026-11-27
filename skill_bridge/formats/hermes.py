@@ -7,6 +7,7 @@ from typing import Any
 
 import yaml
 
+from skill_bridge.compat import CARRIER
 from skill_bridge.formats.base import FormatExporter, register_exporter
 from skill_bridge.formats.openagents import build_standard_frontmatter
 from skill_bridge.models import AgentFormat, ConversionResult, SkillBundle
@@ -35,6 +36,10 @@ def build_hermes_frontmatter(bundle: SkillBundle, name: str) -> dict[str, Any]:
         pass
 
     existing_meta = get_metadata_block(bundle)
+    # `build_standard_frontmatter` already translated the carrier into `fm`.
+    # Merging the source's copy back in would park fields Hermes does read
+    # (its `version`, say) a second time, next to the top-level key.
+    existing_meta.pop(CARRIER, None)
     hermes_meta: dict[str, Any] = {}
 
     if isinstance(existing_meta.get("hermes"), dict):
