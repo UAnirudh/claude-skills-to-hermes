@@ -49,6 +49,17 @@ def _detected_sources(
     return found
 
 
+def sources_include_targets(profile: SyncProfile) -> bool:
+    """True when ``sources: auto`` resolves to the targets themselves.
+
+    A single-target profile imports from every *other* harness. A multi-target
+    profile (``install --all``) has no other harnesses left, so each target is a
+    source for the others instead; sync_profile still skips writing a skill
+    into the directory it came from.
+    """
+    return profile.auto_sources and len(profile.targets) > 1
+
+
 def profile_sources(
     profile: SyncProfile, *, project: Path | None = None, refresh: bool = False
 ) -> list[SkillLocation]:
@@ -61,11 +72,7 @@ def profile_sources(
     """
     if profile.auto_sources:
         target_formats = {t.format for t in profile.targets}
-        # A single-target profile imports from every *other* harness. A
-        # multi-target profile (`install --all`) has no other harnesses left,
-        # so each target is a source for the others instead; sync_profile still
-        # skips writing a skill into the directory it came from.
-        skip_targets = len(profile.targets) <= 1
+        skip_targets = not sources_include_targets(profile)
         return [
             SkillLocation(format=fmt, path=path, scope=one_scope)
             for fmt, path, one_scope in _detected_sources(profile.source_scope, project)
@@ -200,6 +207,36 @@ def reverse_convert(
     return results
 
 
+def sync_skill_from(
+    profile: SyncProfile,
+    location: SkillLocation,
+    skill_dir: Path,
+) -> list[ConversionResult]:
+    """Sync one skill from the harness where it lives to every other target."""
+    if pending_fetch(skill_dir) is not None or source_disappeared(skill_dir):
+        # The guards collect_source_skills applies also hold for the one skill
+        # a watcher event pointed at.
+        return []
+    origin = _git_origin(location, skill_dir)
+    results: list[ConversionResult] = []
+    for target in profile.targets:
+        if (
+            target.format == location.format
+            and os.path.realpath(target.path) == os.path.realpath(skill_dir.parent)
+        ):
+            continue
+        results.append(
+            convert_skill(
+                skill_dir,
+                target.format,
+                target.path,
+                validate=profile.validate,
+                source_git=origin,
+            )
+        )
+    return results
+
+
 def sync_profile(
     profile: SyncProfile,
     *,
@@ -228,22 +265,7 @@ def sync_profile(
 
     results: list[ConversionResult] = []
     for loc, skill_dir in entries:
-        origin = _git_origin(loc, skill_dir)
-        for target in profile.targets:
-            if (
-                target.format == loc.format
-                and os.path.realpath(target.path) == os.path.realpath(skill_dir.parent)
-            ):
-                continue
-            results.append(
-                convert_skill(
-                    skill_dir,
-                    target.format,
-                    target.path,
-                    validate=profile.validate,
-                    source_git=origin,
-                )
-            )
+        results.extend(sync_skill_from(profile, loc, skill_dir))
     return results
 
 

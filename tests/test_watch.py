@@ -365,3 +365,99 @@ def test_watch_from_config_with_install_written_config(home, tmp_path, monkeypat
     watch.watch_from_config(config_path=config_path)
 
     assert observer.scheduled == [str(global_skill_root(AgentFormat.COPILOT))]
+
+
+def test_install_all_profile_watches_the_targets_it_imports_from(home):
+    """`install --all` targets every harness, so those are the only sources."""
+    formats = [AgentFormat.CLAUDE_CODE, AgentFormat.CURSOR, AgentFormat.HERMES]
+    for fmt in formats:
+        write_skill(global_skill_root(fmt), fmt.value)
+
+    profile = auto_import_config(formats).get_profile(None)
+
+    assert watch.watch_roots(profile) == [global_skill_root(fmt) for fmt in formats]
+
+
+def test_watch_profile_schedules_every_all_target(home, monkeypatch):
+    formats = [AgentFormat.CLAUDE_CODE, AgentFormat.CURSOR, AgentFormat.HERMES]
+    write_skill(global_skill_root(AgentFormat.CLAUDE_CODE), "fan-out")
+    # `install --all` only targets harnesses whose skill directory exists.
+    for fmt in formats[1:]:
+        global_skill_root(fmt).mkdir(parents=True, exist_ok=True)
+    profile = auto_import_config(formats).get_profile(None)
+
+    observer = FakeObserver()
+    monkeypatch.setattr(watch, "_try_watchdog", lambda: (FakeEventHandler, lambda: observer))
+    monkeypatch.setattr(watch.time, "sleep", interrupt_sleep)
+
+    watch.watch_profile(profile)
+
+    assert sorted(observer.scheduled) == sorted(
+        str(global_skill_root(fmt)) for fmt in formats
+    )
+
+
+def test_sync_own_writes_do_not_retrigger_the_watch(home):
+    """Fanning a change out must not feed the writes back in as new changes."""
+    write_skill(global_skill_root(AgentFormat.CLAUDE_CODE), "fan-out")
+    profile = auto_import_config(
+        [AgentFormat.CLAUDE_CODE, AgentFormat.CURSOR, AgentFormat.HERMES]
+    ).get_profile(None)
+
+    handler = watch.SkillWatchHandler(profile, debounce_seconds=0)
+    handler.trigger("SKILL.md")
+
+    written = global_skill_root(AgentFormat.HERMES) / "fan-out" / "SKILL.md"
+    assert written.is_file()
+    generated = [
+        path
+        for root in (global_skill_root(AgentFormat.CURSOR), global_skill_root(AgentFormat.HERMES))
+        for path in root.rglob("*.md")
+    ]
+    assert generated
+    for path in generated:
+        assert not handler.should_react(FakeEvent("modified", str(path)))
+        assert not handler.should_react(FakeEvent("created", str(path)))
+
+    # A real edit afterwards (different contents) is a change again.
+    written.write_text(written.read_text(encoding="utf-8") + "\n## Edited\n", encoding="utf-8")
+    assert handler.should_react(FakeEvent("modified", str(written)))
+
+
+def test_edit_in_any_watched_harness_fans_out_from_that_harness(home):
+    """The watched root is also a target: an edit there still fans out.
+
+    It must fan out *from the edited copy*: sync otherwise imports each skill
+    name from the first harness that has it, which would overwrite the edit.
+    """
+    write_skill(global_skill_root(AgentFormat.CLAUDE_CODE), "fan-out")
+    write_skill(global_skill_root(AgentFormat.CURSOR), "fan-out")
+    profile = auto_import_config(
+        [AgentFormat.CLAUDE_CODE, AgentFormat.CURSOR, AgentFormat.HERMES]
+    ).get_profile(None)
+
+    skill_md = global_skill_root(AgentFormat.CURSOR) / "fan-out" / "SKILL.md"
+    skill_md.write_text(
+        skill_md.read_text(encoding="utf-8") + "\n## From cursor\n", encoding="utf-8"
+    )
+
+    handler = watch.SkillWatchHandler(profile, debounce_seconds=0)
+    assert handler.should_react(FakeEvent("modified", str(skill_md)))
+
+    handler.trigger("SKILL.md", changed_path=skill_md)
+
+    for fmt in (AgentFormat.CLAUDE_CODE, AgentFormat.HERMES):
+        copied = global_skill_root(fmt) / "fan-out" / "SKILL.md"
+        assert "## From cursor" in copied.read_text(encoding="utf-8")
+
+
+def test_skill_dir_containing_finds_the_skill_around_a_changed_file(home):
+    root = global_skill_root(AgentFormat.CLAUDE_CODE)
+    skill_dir = write_skill(root, "nested")
+    nested = skill_dir / "references" / "deep" / "guide.md"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("# Guide\n", encoding="utf-8")
+
+    assert watch.skill_dir_containing(nested, root) == skill_dir
+    assert watch.skill_dir_containing(root / "loose.md", root) is None
+    assert watch.skill_dir_containing(nested, global_skill_root(AgentFormat.HERMES)) is None

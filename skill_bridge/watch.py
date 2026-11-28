@@ -7,8 +7,14 @@ import threading
 import time
 from pathlib import Path
 
-from skill_bridge.config import SyncProfile, load_config
-from skill_bridge.sync import profile_sources, sync_profile
+from skill_bridge.config import SkillLocation, SyncProfile, load_config
+from skill_bridge.models import ConversionResult
+from skill_bridge.sync import (
+    profile_sources,
+    sources_include_targets,
+    sync_profile,
+    sync_skill_from,
+)
 
 #: How often to look for harness directories that appeared after startup.
 RESCAN_SECONDS = 2.0
@@ -51,8 +57,17 @@ def watch_roots(profile: SyncProfile) -> list[Path]:
     Destination directories are excluded: several harnesses share
     ``.agents/skills``, and watching the output would make a sync trigger
     itself forever.
+
+    The exception is an ``install --all`` profile, whose targets are also its
+    only sources: excluding them would leave nothing to watch. Those roots are
+    watched, and the handler ignores the files its own sync just wrote
+    (:meth:`SkillWatchHandler.should_react`), so a change fans out once instead
+    of re-triggering itself.
     """
-    targets = {os.path.realpath(target.path) for target in profile.targets}
+    if sources_include_targets(profile):
+        targets: set[str] = set()
+    else:
+        targets = {os.path.realpath(target.path) for target in profile.targets}
     roots: list[Path] = []
     seen: set[str] = set()
 
@@ -124,6 +139,31 @@ class _RootWatcher:
         return added
 
 
+def skill_dir_containing(path: Path, root: Path) -> Path | None:
+    """The skill directory holding ``path`` under ``root``, if there is one."""
+    try:
+        path = Path(path).resolve()
+        root = Path(root).resolve()
+        path.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    for candidate in (path, *path.parents):
+        if (candidate / "SKILL.md").is_file() or (candidate / "skill.md").is_file():
+            return candidate
+        if candidate == root:
+            break
+    return None
+
+
+def _fingerprint(path: str) -> tuple[int, int] | None:
+    """Identity of a file's current contents (mtime and size), if it exists."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 class SkillWatchHandler:
     """Debounce filesystem events and trigger sync."""
 
@@ -145,14 +185,94 @@ class SkillWatchHandler:
         #: Held while a sync runs, so the watchdog thread and the main loop
         #: cannot start two of them at once.
         self._sync_lock = threading.Lock()
+        self._pending_paths: list[Path] = []
+        #: Fingerprints of the files this sync wrote, so the events caused by
+        #: those writes do not start another sync.
+        self._own_writes: dict[str, tuple[int, int]] = {}
 
-    def trigger(self, reason: str = "change", *, force: bool = False) -> None:
+    def _changed_skill(self, path: Path) -> tuple[SkillLocation, Path] | None:
+        """Where a changed file came from, so its own harness leads the sync.
+
+        An ``install --all`` profile targets every harness, and sync otherwise
+        imports each skill name from the first harness that has it. Fanning out
+        the copy the user just edited keeps the edit instead of overwriting it
+        with another harness's older copy.
+        """
+        for location in profile_sources(self.profile):
+            skill_dir = skill_dir_containing(path, location.path)
+            if skill_dir is not None:
+                return location, skill_dir
+        return None
+
+    def _sync(self, paths: list[Path]) -> list[ConversionResult]:
+        """Sync the changed skills, or everything when that is not possible."""
+        changed = [self._changed_skill(path) for path in paths]
+        if not changed or any(item is None for item in changed):
+            return sync_profile(self.profile)
+
+        results: list[ConversionResult] = []
+        seen: set[str] = set()
+        for location, skill_dir in changed:
+            key = os.path.realpath(skill_dir)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.extend(sync_skill_from(self.profile, location, skill_dir))
+        return results
+
+    def should_react(self, event) -> bool:
+        """Whether this event is a real edit rather than our own sync's write."""
+        if not is_relevant_event(event):
+            return False
+        return not self.is_own_write(str(getattr(event, "src_path", "")))
+
+    def is_own_write(self, path: str) -> bool:
+        """True when ``path`` still holds exactly what a sync wrote."""
+        if not self._own_writes:
+            return False
+        real = os.path.realpath(path)
+        expected = self._own_writes.get(real)
+        if expected is None:
+            return False
+        return _fingerprint(real) == expected
+
+    def _record_own_writes(self, results) -> None:
+        written: dict[str, tuple[int, int]] = {}
+        for result in results:
+            root = getattr(result, "output_dir", None)
+            if root is None or not Path(root).is_dir():
+                continue
+            for path in Path(root).rglob("*"):
+                if not path.is_file():
+                    continue
+                real = os.path.realpath(path)
+                fingerprint = _fingerprint(real)
+                if fingerprint is not None:
+                    written[real] = fingerprint
+        # Keep earlier entries: a debounced burst can span several syncs, and
+        # each write is remembered by its own mtime, so a later edit (which
+        # changes the mtime) is still seen as a change.
+        self._own_writes = {
+            path: fingerprint
+            for path, fingerprint in {**self._own_writes, **written}.items()
+            if _fingerprint(path) is not None
+        }
+
+    def trigger(
+        self,
+        reason: str = "change",
+        *,
+        force: bool = False,
+        changed_path: Path | str | None = None,
+    ) -> None:
         """Sync once, unless one is already running or the debounce holds it.
 
         Called from the watchdog thread and from the main loop, so a sync that
         is already running is never started a second time: an event that
         arrives mid-sync is remembered and run once afterwards instead.
         """
+        if changed_path is not None:
+            self._pending_paths.append(Path(changed_path))
         if not self._sync_lock.acquire(blocking=False):
             self._pending = True
             return
@@ -161,15 +281,17 @@ class SkillWatchHandler:
             if not force and now - self._last_run < self.debounce_seconds:
                 self._pending = True
                 return
+            paths, self._pending_paths = self._pending_paths, []
             self._last_run = now
             self._pending = False
             try:
-                results = sync_profile(self.profile)
+                results = self._sync(paths)
             except Exception as exc:  # noqa: BLE001 - keep the watcher alive
                 self.last_error = exc
                 self._report(self.on_error, exc)
                 return
             self.last_error = None
+            self._record_own_writes(results)
             self._report(self.on_sync, reason, results)
         finally:
             self._sync_lock.release()
@@ -221,8 +343,9 @@ def watch_profile(
                 if getattr(event, "event_type", "") in {"deleted", "moved"}:
                     roots.forget(str(event.src_path))
                 return
-            if is_relevant_event(event):
-                handler.trigger(Path(str(event.src_path)).name)
+            if handler.should_react(event):
+                changed = str(event.src_path)
+                handler.trigger(Path(changed).name, changed_path=changed)
 
     events = Handler()
     observer = Observer()
